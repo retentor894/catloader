@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CatLoader - Video Downloader</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>CatLoader</h1>
+            <p class="subtitle">Download videos from 1000+ sites</p>
+        </header>
+
+        <main>
+            <div class="search-box">
+                <input
+                    type="text"
+                    id="url-input"
+                    placeholder="Paste video URL here..."
+                    autocomplete="off"
+                >
+                <button id="search-btn" type="button">
+                    <span class="btn-text">Get Video</span>
+                    <span class="btn-loader hidden"></span>
+                </button>
+            </div>
+
+            <div id="error-message" class="error-message hidden"></div>
+
+            <div id="video-result" class="video-result hidden">
+                <div class="video-card">
+                    <div class="thumbnail-container">
+                        <img id="video-thumbnail" src="" alt="Video thumbnail">
+                        <span id="video-duration" class="duration"></span>
+                    </div>
+                    <div class="video-info">
+                        <h2 id="video-title"></h2>
+                        <p id="video-uploader" class="uploader"></p>
+                    </div>
+                </div>
+
+                <div class="download-section">
+                    <div class="format-group">
+                        <h3>Video</h3>
+                        <div id="video-formats" class="format-buttons"></div>
+                    </div>
+                    <div class="format-group">
+                        <h3>Audio Only</h3>
+                        <div id="audio-formats" class="format-buttons"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="supported-sites">
+                <p>Supported: YouTube, Vimeo, Twitter/X, TikTok, Facebook, Instagram, and 1000+ more</p>
+            </div>
+        </main>
+
+        <footer>
+            <p>CatLoader - Free Video Downloader</p>
+        </footer>
+    </div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>
