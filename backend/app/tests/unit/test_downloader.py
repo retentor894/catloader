@@ -3,6 +3,7 @@ import os
 from unittest.mock import patch, MagicMock
 from app.services.downloader import get_video_info, download_video
 from app.models.schemas import VideoInfo
+from app.exceptions import VideoExtractionError, DownloadError
 
 
 class TestGetVideoInfo:
@@ -31,7 +32,7 @@ class TestGetVideoInfo:
         mock_ydl.extract_info.return_value = None
         mock_ydl_class.return_value.__enter__.return_value = mock_ydl
 
-        with pytest.raises(ValueError, match="Could not extract video information"):
+        with pytest.raises(VideoExtractionError, match="Could not extract video information"):
             get_video_info("https://invalid-url.com")
 
     @patch('app.services.downloader.yt_dlp.YoutubeDL')
@@ -146,7 +147,7 @@ class TestDownloadVideo:
         mock_ydl.extract_info.return_value = None
         mock_ydl_class.return_value.__enter__.return_value = mock_ydl
 
-        with pytest.raises(ValueError, match="Could not download video"):
+        with pytest.raises(DownloadError, match="Could not download video"):
             download_video("https://test.com", "best")
 
     @patch('app.services.downloader.yt_dlp.YoutubeDL')
@@ -161,7 +162,7 @@ class TestDownloadVideo:
         mock_ydl.extract_info.return_value = {'title': 'Test'}
         mock_ydl_class.return_value.__enter__.return_value = mock_ydl
 
-        with pytest.raises(ValueError, match="Download completed but file not found"):
+        with pytest.raises(DownloadError, match="Download completed but file not found"):
             download_video("https://test.com", "best")
 
     def test_content_type_mp4(self):

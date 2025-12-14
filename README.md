@@ -273,6 +273,7 @@ catloader/
 |----------|---------|-------------|
 | PORT | 8000 | Backend server port |
 | PYTHONUNBUFFERED | 1 | Python output buffering |
+| CORS_ORIGINS | http://localhost:5500,http://localhost:8080,http://127.0.0.1:5500 | Comma-separated list of allowed CORS origins. Use `*` to allow all origins (not recommended for production with credentials). |
 
 ### Docker Ports
 

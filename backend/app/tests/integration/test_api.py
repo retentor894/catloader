@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from fastapi import status
 from app.models.schemas import VideoInfo, VideoFormat
+from app.exceptions import VideoExtractionError, DownloadError, NetworkError
 
 
 class TestHealthEndpoints:
@@ -83,7 +84,7 @@ class TestVideoInfoEndpoint:
     @patch('app.routes.download.get_video_info')
     def test_video_extraction_error(self, mock_get_info, client):
         """Should return 400 when video extraction fails."""
-        mock_get_info.side_effect = Exception("Unsupported URL")
+        mock_get_info.side_effect = VideoExtractionError("Unsupported URL")
 
         response = client.post(
             "/api/info",
@@ -91,6 +92,32 @@ class TestVideoInfoEndpoint:
         )
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "detail" in response.json()
+
+    @patch('app.routes.download.get_video_info')
+    def test_network_error_returns_503(self, mock_get_info, client):
+        """Should return 503 for network errors."""
+        mock_get_info.side_effect = NetworkError("Connection timeout")
+
+        response = client.post(
+            "/api/info",
+            json={"url": "https://www.youtube.com/watch?v=test"}
+        )
+
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        assert "detail" in response.json()
+
+    @patch('app.routes.download.get_video_info')
+    def test_unexpected_error_returns_500(self, mock_get_info, client):
+        """Should return 500 for unexpected errors."""
+        mock_get_info.side_effect = RuntimeError("Unexpected error")
+
+        response = client.post(
+            "/api/info",
+            json={"url": "https://www.youtube.com/watch?v=test"}
+        )
+
+        assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
         assert "detail" in response.json()
 
     @patch('app.routes.download.get_video_info')
@@ -262,7 +289,7 @@ class TestDownloadEndpoint:
     @patch('app.routes.download.download_video')
     def test_download_failure(self, mock_download, client):
         """Should return 400 when download fails."""
-        mock_download.side_effect = Exception("Download failed: 403 Forbidden")
+        mock_download.side_effect = DownloadError("Download failed: 403 Forbidden")
 
         response = client.get(
             "/api/download",
@@ -272,6 +299,19 @@ class TestDownloadEndpoint:
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         assert "detail" in response.json()
         assert "403" in response.json()["detail"]
+
+    @patch('app.routes.download.download_video')
+    def test_download_network_error_returns_503(self, mock_download, client):
+        """Should return 503 for network errors during download."""
+        mock_download.side_effect = NetworkError("Connection reset")
+
+        response = client.get(
+            "/api/download",
+            params={"url": "https://test.com"}
+        )
+
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        assert "detail" in response.json()
 
     @patch('app.routes.download.download_video')
     def test_cache_control_header(self, mock_download, client):

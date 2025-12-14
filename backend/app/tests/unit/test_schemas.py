@@ -21,6 +21,46 @@ class TestURLRequest:
         with pytest.raises(ValidationError):
             URLRequest()
 
+    def test_empty_url_raises_error(self):
+        """Should reject empty URL."""
+        with pytest.raises(ValidationError, match="URL cannot be empty"):
+            URLRequest(url="")
+
+    def test_whitespace_only_url_raises_error(self):
+        """Should reject whitespace-only URL."""
+        with pytest.raises(ValidationError, match="URL cannot be empty"):
+            URLRequest(url="   ")
+
+    def test_invalid_url_format_raises_error(self):
+        """Should reject invalid URL format."""
+        with pytest.raises(ValidationError, match="Invalid URL format"):
+            URLRequest(url="not-a-url")
+
+    def test_url_without_protocol_raises_error(self):
+        """Should reject URL without http/https protocol."""
+        with pytest.raises(ValidationError, match="Invalid URL format"):
+            URLRequest(url="www.youtube.com/watch?v=test")
+
+    def test_http_url_accepted(self):
+        """Should accept http:// URLs."""
+        request = URLRequest(url="http://example.com/video")
+        assert request.url == "http://example.com/video"
+
+    def test_localhost_url_accepted(self):
+        """Should accept localhost URLs."""
+        request = URLRequest(url="http://localhost:8000/api")
+        assert request.url == "http://localhost:8000/api"
+
+    def test_ip_address_url_accepted(self):
+        """Should accept IP address URLs."""
+        request = URLRequest(url="http://192.168.1.1:3000/video")
+        assert request.url == "http://192.168.1.1:3000/video"
+
+    def test_url_trimmed(self):
+        """Should trim whitespace from URL."""
+        request = URLRequest(url="  https://youtube.com/watch  ")
+        assert request.url == "https://youtube.com/watch"
+
 
 class TestVideoFormat:
     """Test VideoFormat schema."""
