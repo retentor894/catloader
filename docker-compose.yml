@@ -1,23 +1,33 @@
 services:
   backend:
     build: ./backend
-    container_name: catloader-backend
+    container_name: catloader-dev-backend
     restart: unless-stopped
     environment:
       - PYTHONUNBUFFERED=1
     volumes:
-      - /tmp/catloader:/tmp/catloader
+      - ${TEMP_DIR:-/tmp/catloader-dev}:${TEMP_DIR:-/tmp/catloader-dev}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   frontend:
     build: ./frontend
-    container_name: catloader-frontend
+    container_name: catloader-dev-frontend
     restart: unless-stopped
     ports:
-      - "8080:80"
+      - "${HTTP_PORT:-8180}:80"
     depends_on:
       - backend
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
