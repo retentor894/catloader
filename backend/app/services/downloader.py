@@ -321,10 +321,15 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
     output_template = os.path.join(temp_dir, '%(title)s.%(ext)s')
     progress_queue: queue.Queue = queue.Queue()
     download_complete = threading.Event()
+    cancelled = threading.Event()
     download_error: Dict[str, Any] = {}
 
     def progress_hook(d: Dict[str, Any]) -> None:
         """Hook called by yt-dlp with download progress."""
+        # Check if cancelled
+        if cancelled.is_set():
+            raise Exception("Download cancelled by client")
+
         if d['status'] == 'downloading':
             total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
             downloaded = d.get('downloaded_bytes', 0)
@@ -353,6 +358,9 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
 
     def postprocessor_hook(d: Dict[str, Any]) -> None:
         """Hook called by yt-dlp during post-processing."""
+        if cancelled.is_set():
+            raise Exception("Download cancelled by client")
+
         if d['status'] == 'started':
             progress_queue.put({
                 'status': 'processing',
@@ -389,7 +397,8 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.extract_info(url, download=True)
         except Exception as e:
-            download_error['error'] = str(e)
+            if not cancelled.is_set():
+                download_error['error'] = str(e)
         finally:
             download_complete.set()
 
@@ -397,15 +406,28 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
     thread = threading.Thread(target=download_thread)
     thread.start()
 
-    # Yield progress events
-    while not download_complete.is_set() or not progress_queue.empty():
-        try:
-            progress = progress_queue.get(timeout=0.5)
-            yield f"data: {json.dumps(progress)}\n\n"
-        except queue.Empty:
-            # Send heartbeat to keep connection alive
-            if not download_complete.is_set():
-                yield f"data: {json.dumps({'status': 'waiting'})}\n\n"
+    client_disconnected = False
+    try:
+        # Yield progress events
+        while not download_complete.is_set() or not progress_queue.empty():
+            try:
+                progress = progress_queue.get(timeout=0.5)
+                yield f"data: {json.dumps(progress)}\n\n"
+            except queue.Empty:
+                # Send heartbeat to keep connection alive
+                if not download_complete.is_set():
+                    yield f"data: {json.dumps({'status': 'waiting'})}\n\n"
+    except GeneratorExit:
+        # Client disconnected - signal cancellation and cleanup
+        client_disconnected = True
+        cancelled.set()
+        logger.info(f"Client disconnected, cancelling download for {url}")
+    finally:
+        if client_disconnected:
+            # Wait briefly for thread to notice cancellation
+            thread.join(timeout=2.0)
+            cleanup_temp_dir(temp_dir)
+            return
 
     thread.join()
 
