@@ -3,11 +3,140 @@ import tempfile
 import os
 import shutil
 import logging
-from typing import Generator, Tuple
+import json
+import queue
+import threading
+import secrets
+import time
+import atexit
+from typing import Generator, Tuple, Dict, Any, Optional
 from ..models.schemas import VideoInfo, VideoFormat
 from ..exceptions import VideoExtractionError, DownloadError, NetworkError
 
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# Constants
+# =============================================================================
+DOWNLOAD_EXPIRY_SECONDS = 300  # 5 minutes
+MAX_CONCURRENT_DOWNLOADS = 100
+CHUNK_SIZE = 8192
+PROGRESS_POLL_INTERVAL = 0.5
+THREAD_JOIN_TIMEOUT = 2.0
+DOWNLOAD_ID_BYTES = 32  # 256 bits of entropy
+
+CONTENT_TYPES = {
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
+    '.mkv': 'video/x-matroska',
+    '.mp3': 'audio/mpeg',
+    '.m4a': 'audio/mp4',
+    '.opus': 'audio/opus',
+    '.ogg': 'audio/ogg',
+}
+
+
+def get_content_type(ext: str) -> str:
+    """Get content type for file extension."""
+    return CONTENT_TYPES.get(ext.lower(), 'application/octet-stream')
+
+
+# =============================================================================
+# In-memory store for completed downloads
+# =============================================================================
+# In production, use Redis or similar
+_completed_downloads: Dict[str, Dict[str, Any]] = {}
+_downloads_lock = threading.Lock()
+_cleanup_thread: Optional[threading.Thread] = None
+_shutdown_event = threading.Event()
+
+
+def _background_cleanup() -> None:
+    """Periodically clean up expired downloads."""
+    while not _shutdown_event.wait(timeout=60):
+        _cleanup_expired_downloads()
+
+
+def _cleanup_expired_downloads() -> None:
+    """Clean up expired downloads from the store."""
+    with _downloads_lock:
+        current_time = time.time()
+        expired = [k for k, v in _completed_downloads.items()
+                   if current_time - v.get('created_at', 0) > DOWNLOAD_EXPIRY_SECONDS]
+        for k in expired:
+            info = _completed_downloads.pop(k, None)
+            if info and 'temp_dir' in info:
+                cleanup_temp_dir(info['temp_dir'])
+        if expired:
+            logger.info(f"Cleaned up {len(expired)} expired downloads")
+
+
+def _start_cleanup_thread() -> None:
+    """Start the background cleanup thread."""
+    global _cleanup_thread
+    if _cleanup_thread is None or not _cleanup_thread.is_alive():
+        _cleanup_thread = threading.Thread(target=_background_cleanup, daemon=True)
+        _cleanup_thread.start()
+        logger.debug("Started background cleanup thread")
+
+
+def _shutdown_cleanup_thread() -> None:
+    """Shutdown the background cleanup thread."""
+    _shutdown_event.set()
+    if _cleanup_thread and _cleanup_thread.is_alive():
+        _cleanup_thread.join(timeout=5)
+    logger.debug("Shutdown background cleanup thread")
+
+
+# Start cleanup thread on module load
+_start_cleanup_thread()
+atexit.register(_shutdown_cleanup_thread)
+
+
+def store_completed_download(file_info: Dict[str, Any]) -> str:
+    """Store completed download info and return download ID."""
+    # Use cryptographically secure token
+    download_id = secrets.token_urlsafe(DOWNLOAD_ID_BYTES)
+
+    # Create a copy to prevent external mutation
+    stored_info = file_info.copy()
+    stored_info['created_at'] = time.time()
+
+    with _downloads_lock:
+        # Clean expired downloads
+        _cleanup_expired_downloads_locked()
+
+        # Check capacity and remove oldest if needed
+        if len(_completed_downloads) >= MAX_CONCURRENT_DOWNLOADS:
+            oldest_key = min(
+                _completed_downloads.keys(),
+                key=lambda k: _completed_downloads[k].get('created_at', 0)
+            )
+            old_info = _completed_downloads.pop(oldest_key)
+            if old_info and 'temp_dir' in old_info:
+                cleanup_temp_dir(old_info['temp_dir'])
+            logger.warning(f"Evicted oldest download due to capacity limit")
+
+        _completed_downloads[download_id] = stored_info
+
+    return download_id
+
+
+def _cleanup_expired_downloads_locked() -> None:
+    """Clean expired downloads (must be called with lock held)."""
+    current_time = time.time()
+    expired = [k for k, v in _completed_downloads.items()
+               if current_time - v.get('created_at', 0) > DOWNLOAD_EXPIRY_SECONDS]
+    for k in expired:
+        info = _completed_downloads.pop(k, None)
+        if info and 'temp_dir' in info:
+            cleanup_temp_dir(info['temp_dir'])
+
+
+def remove_completed_download(download_id: str) -> Optional[Dict[str, Any]]:
+    """Remove and return completed download info."""
+    with _downloads_lock:
+        return _completed_downloads.pop(download_id, None)
 
 
 # Common options to avoid 403 errors
@@ -171,12 +300,12 @@ def cleanup_temp_dir(temp_dir: str) -> None:
         logger.warning(f"Failed to cleanup temp directory {temp_dir}: {e}")
 
 
-def download_video(url: str, format_id: str, audio_only: bool = False) -> Tuple[str, str, Generator[bytes, None, None]]:
+def download_video(url: str, format_id: str, audio_only: bool = False) -> Tuple[str, str, int, Generator[bytes, None, None]]:
     """
-    Download video/audio and return filename, content_type, and file stream.
+    Download video/audio and return filename, content_type, file_size, and file stream.
 
     Returns:
-        Tuple of (filename, content_type, generator)
+        Tuple of (filename, content_type, file_size, generator)
 
     Raises:
         DownloadError: If download fails
@@ -235,24 +364,15 @@ def download_video(url: str, format_id: str, audio_only: bool = False) -> Tuple[
         raise DownloadError("Download completed but file not found")
 
     filename = os.path.basename(downloaded_file)
+    file_size = os.path.getsize(downloaded_file)
     ext = os.path.splitext(filename)[1].lower()
-
-    content_types = {
-        '.mp4': 'video/mp4',
-        '.webm': 'video/webm',
-        '.mkv': 'video/x-matroska',
-        '.mp3': 'audio/mpeg',
-        '.m4a': 'audio/mp4',
-        '.opus': 'audio/opus',
-        '.ogg': 'audio/ogg',
-    }
-    content_type = content_types.get(ext, 'application/octet-stream')
+    content_type = get_content_type(ext)
 
     def file_generator() -> Generator[bytes, None, None]:
         """Generator that streams file and cleans up when done or on error."""
         try:
             with open(downloaded_file, 'rb') as f:
-                while chunk := f.read(8192):
+                while chunk := f.read(CHUNK_SIZE):
                     yield chunk
         except GeneratorExit:
             # Client cancelled the download
@@ -262,4 +382,166 @@ def download_video(url: str, format_id: str, audio_only: bool = False) -> Tuple[
         finally:
             cleanup_temp_dir(temp_dir)
 
-    return filename, content_type, file_generator()
+    return filename, content_type, file_size, file_generator()
+
+
+def download_video_with_progress(url: str, format_id: str, audio_only: bool = False) -> Generator[str, None, None]:
+    """
+    Download video/audio and yield SSE events with progress updates.
+
+    Yields:
+        SSE-formatted strings with progress data
+    """
+    temp_dir = tempfile.mkdtemp()
+    output_template = os.path.join(temp_dir, '%(title)s.%(ext)s')
+    progress_queue: queue.Queue = queue.Queue()
+    download_complete = threading.Event()
+    cancelled = threading.Event()
+    download_error: Dict[str, Any] = {}
+
+    def progress_hook(d: Dict[str, Any]) -> None:
+        """Hook called by yt-dlp with download progress."""
+        # Check if cancelled
+        if cancelled.is_set():
+            raise Exception("Download cancelled by client")
+
+        if d['status'] == 'downloading':
+            total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+            downloaded = d.get('downloaded_bytes', 0)
+            speed = d.get('speed', 0)
+            eta = d.get('eta', 0)
+
+            if total > 0:
+                percent = (downloaded / total) * 100
+            else:
+                percent = 0
+
+            progress_queue.put({
+                'status': 'downloading',
+                'percent': round(percent, 1),
+                'downloaded': downloaded,
+                'total': total,
+                'speed': speed,
+                'eta': eta,
+            })
+        elif d['status'] == 'finished':
+            progress_queue.put({
+                'status': 'processing',
+                'percent': 100,
+                'message': 'Processing file...',
+            })
+
+    def postprocessor_hook(d: Dict[str, Any]) -> None:
+        """Hook called by yt-dlp during post-processing."""
+        if cancelled.is_set():
+            raise Exception("Download cancelled by client")
+
+        if d['status'] == 'started':
+            progress_queue.put({
+                'status': 'processing',
+                'percent': 100,
+                'message': 'Converting...',
+            })
+
+    def download_thread() -> None:
+        """Run download in separate thread to not block SSE."""
+        nonlocal download_error
+
+        ydl_opts = {
+            **COMMON_OPTS,
+            'outtmpl': output_template,
+            'progress_hooks': [progress_hook],
+            'postprocessor_hooks': [postprocessor_hook],
+        }
+
+        if audio_only:
+            ydl_opts['format'] = 'bestaudio/best'
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
+        else:
+            if format_id and format_id != 'best':
+                ydl_opts['format'] = format_id
+            else:
+                ydl_opts['format'] = 'bestvideo+bestaudio/best'
+            ydl_opts['merge_output_format'] = 'mp4'
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.extract_info(url, download=True)
+        except Exception as e:
+            if not cancelled.is_set():
+                download_error['error'] = str(e)
+        finally:
+            download_complete.set()
+
+    # Start download in background thread (daemon for clean shutdown)
+    thread = threading.Thread(target=download_thread, daemon=True)
+    thread.start()
+
+    client_disconnected = False
+    try:
+        # Yield progress events
+        while not download_complete.is_set() or not progress_queue.empty():
+            try:
+                progress = progress_queue.get(timeout=PROGRESS_POLL_INTERVAL)
+                yield f"data: {json.dumps(progress)}\n\n"
+            except queue.Empty:
+                # Send heartbeat to keep connection alive
+                if not download_complete.is_set():
+                    yield f"data: {json.dumps({'status': 'waiting'})}\n\n"
+    except GeneratorExit:
+        # Client disconnected - signal cancellation and cleanup
+        client_disconnected = True
+        cancelled.set()
+        logger.info(f"Client disconnected, cancelling download for {url}")
+    finally:
+        if client_disconnected:
+            # Wait briefly for thread to notice cancellation
+            thread.join(timeout=THREAD_JOIN_TIMEOUT)
+            cleanup_temp_dir(temp_dir)
+            return
+
+    thread.join()
+
+    # Check for errors
+    if download_error:
+        cleanup_temp_dir(temp_dir)
+        yield f"data: {json.dumps({'status': 'error', 'message': download_error['error']})}\n\n"
+        return
+
+    # Find downloaded file
+    downloaded_file = None
+    for file in os.listdir(temp_dir):
+        file_path = os.path.join(temp_dir, file)
+        if os.path.isfile(file_path):
+            downloaded_file = file_path
+            break
+
+    if not downloaded_file:
+        cleanup_temp_dir(temp_dir)
+        yield f"data: {json.dumps({'status': 'error', 'message': 'File not found'})}\n\n"
+        return
+
+    filename = os.path.basename(downloaded_file)
+    file_size = os.path.getsize(downloaded_file)
+    ext = os.path.splitext(filename)[1].lower()
+    content_type = get_content_type(ext)
+
+    # Store file info for the download endpoint to retrieve
+    safe_filename = filename.encode('ascii', 'ignore').decode('ascii')
+    if not safe_filename:
+        safe_filename = "download" + (".mp3" if audio_only else ".mp4")
+
+    # Store download info and get ID
+    download_id = store_completed_download({
+        'filename': safe_filename,
+        'file_size': file_size,
+        'content_type': content_type,
+        'temp_dir': temp_dir,
+        'file_path': downloaded_file,
+    })
+
+    yield f"data: {json.dumps({'status': 'complete', 'download_id': download_id, 'filename': safe_filename, 'file_size': file_size})}\n\n"

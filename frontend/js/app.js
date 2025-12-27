@@ -59,6 +59,9 @@ function setLoading(loading) {
 }
 
 function createFormatButton(format, isAudio) {
+    const container = document.createElement('div');
+    container.className = 'format-btn-container';
+
     const btn = document.createElement('button');
     btn.className = `format-btn ${isAudio ? 'audio' : 'video'}`;
 
@@ -67,45 +70,138 @@ function createFormatButton(format, isAudio) {
         label += ` (${formatFileSize(format.filesize)})`;
     }
     btn.textContent = label;
+    btn.dataset.originalLabel = label;
 
-    btn.addEventListener('click', () => downloadFile(format.format_id, isAudio, btn));
-    return btn;
+    const progressBar = document.createElement('div');
+    progressBar.className = 'progress-bar hidden';
+    progressBar.innerHTML = '<div class="progress-fill"></div>';
+
+    const progressText = document.createElement('span');
+    progressText.className = 'progress-text hidden';
+
+    btn.addEventListener('click', () => downloadFile(format.format_id, isAudio, container));
+
+    container.appendChild(btn);
+    container.appendChild(progressBar);
+    container.appendChild(progressText);
+
+    return container;
 }
 
-async function downloadFile(formatId, audioOnly, button) {
-    if (button.classList.contains('downloading')) return;
+function formatSpeed(bytesPerSecond) {
+    if (!bytesPerSecond) return '';
+    return formatFileSize(bytesPerSecond) + '/s';
+}
 
-    button.classList.add('downloading');
-    const originalText = button.textContent;
-    button.textContent = 'Downloading...';
+function formatEta(seconds) {
+    if (!seconds || seconds < 0) return '';
+    if (seconds < 60) return `${Math.round(seconds)}s`;
+    const m = Math.floor(seconds / 60);
+    const s = Math.round(seconds % 60);
+    return `${m}m ${s}s`;
+}
 
-    try {
-        const params = new URLSearchParams({
-            url: currentVideoUrl,
-            format_id: formatId,
-            audio_only: audioOnly,
-        });
+function downloadFile(formatId, audioOnly, container) {
+    const btn = container.querySelector('.format-btn');
+    const progressBar = container.querySelector('.progress-bar');
+    const progressFill = container.querySelector('.progress-fill');
+    const progressText = container.querySelector('.progress-text');
 
-        const downloadUrl = `${API_URL}/api/download?${params}`;
+    // Prevent multiple clicks
+    if (btn.classList.contains('downloading')) return;
 
-        // Create temporary link and trigger download
-        const link = document.createElement('a');
-        link.href = downloadUrl;
-        link.style.display = 'none';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+    btn.classList.add('downloading');
+    btn.textContent = 'Starting...';
+    progressBar.classList.remove('hidden');
+    progressText.classList.remove('hidden');
 
-        // Reset button after a delay
+    const params = new URLSearchParams({
+        url: currentVideoUrl,
+        format_id: formatId,
+        audio_only: audioOnly,
+    });
+
+    const eventSource = new EventSource(`${API_URL}/api/download/progress?${params}`);
+
+    eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        switch (data.status) {
+            case 'downloading':
+                const percent = data.percent || 0;
+                progressFill.style.width = `${percent}%`;
+                btn.textContent = `${percent.toFixed(1)}%`;
+
+                let statusText = '';
+                if (data.speed) {
+                    statusText += formatSpeed(data.speed);
+                }
+                if (data.eta) {
+                    statusText += statusText ? ` - ${formatEta(data.eta)}` : formatEta(data.eta);
+                }
+                progressText.textContent = statusText;
+                break;
+
+            case 'processing':
+                progressFill.style.width = '100%';
+                btn.textContent = data.message || 'Processing...';
+                progressText.textContent = '';
+                break;
+
+            case 'complete':
+                eventSource.close();
+                btn.textContent = 'Done!';
+                progressText.textContent = '';
+
+                // Trigger file download
+                const downloadUrl = `${API_URL}/api/download/file/${data.download_id}`;
+                const iframe = document.createElement('iframe');
+                iframe.style.display = 'none';
+                iframe.src = downloadUrl;
+                document.body.appendChild(iframe);
+                setTimeout(() => document.body.removeChild(iframe), 60000);
+
+                // Reset UI after delay
+                setTimeout(() => {
+                    btn.classList.remove('downloading');
+                    btn.textContent = btn.dataset.originalLabel;
+                    progressBar.classList.add('hidden');
+                    progressText.classList.add('hidden');
+                    progressFill.style.width = '0%';
+                }, 2000);
+                break;
+
+            case 'error':
+                eventSource.close();
+                btn.textContent = 'Error';
+                progressText.textContent = data.message || 'Download failed';
+                progressBar.classList.add('hidden');
+
+                setTimeout(() => {
+                    btn.classList.remove('downloading');
+                    btn.textContent = btn.dataset.originalLabel;
+                    progressText.classList.add('hidden');
+                }, 3000);
+                break;
+
+            case 'waiting':
+                // Heartbeat, do nothing
+                break;
+        }
+    };
+
+    eventSource.onerror = () => {
+        eventSource.close();
+        btn.textContent = 'Error';
+        progressBar.classList.add('hidden');
+        progressText.textContent = 'Connection lost';
+
         setTimeout(() => {
-            button.classList.remove('downloading');
-            button.textContent = originalText;
-        }, 2000);
-    } catch (error) {
-        button.classList.remove('downloading');
-        button.textContent = originalText;
-        showError('Download failed. Please try again.');
-    }
+            btn.classList.remove('downloading');
+            btn.textContent = btn.dataset.originalLabel;
+            progressText.classList.add('hidden');
+        }, 3000);
+    };
 }
 
 function displayVideoInfo(info) {

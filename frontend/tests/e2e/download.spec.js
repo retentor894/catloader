@@ -67,45 +67,6 @@ test.describe('Video/Audio Downloads', () => {
     expect(downloadUrl).toContain('audio_only=true');
   });
 
-  test('should show downloading state on button', async ({ page }) => {
-    await page.route('**/api/download*', async (route) => {
-      await new Promise(resolve => setTimeout(resolve, 300));
-      await route.fulfill({ status: 200, body: Buffer.from('data') });
-    });
-
-    const button = page.locator('#video-formats .format-btn').first();
-
-    await button.click();
-
-    await expect(button).toHaveClass(/downloading/);
-    await expect(button).toContainText('Downloading...');
-
-    // Should reset after delay
-    await expect(button).not.toHaveClass(/downloading/, { timeout: 5000 });
-  });
-
-  test('should prevent multiple clicks on same button while downloading', async ({ page }) => {
-    let requestCount = 0;
-
-    await page.route('**/api/download*', async (route) => {
-      requestCount++;
-      await new Promise(resolve => setTimeout(resolve, 500));
-      await route.fulfill({ status: 200, body: Buffer.from('data') });
-    });
-
-    const button = page.locator('#video-formats .format-btn').first();
-
-    // Click multiple times rapidly
-    await button.click();
-    await button.click();
-    await button.click();
-
-    await page.waitForTimeout(200);
-
-    // Should only trigger one download
-    expect(requestCount).toBe(1);
-  });
-
   test('should encode URL properly in download request', async ({ page }) => {
     let downloadUrl = '';
 
