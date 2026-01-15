@@ -63,7 +63,7 @@ catloader/
 - **Format selection**: Uses yt-dlp format strings like `bestvideo[height<=1080]+bestaudio` to combine separate video/audio streams
 - **Streaming**: Downloads are streamed to client via `StreamingResponse`, temp files cleaned up after transfer
 - **CORS**: Enabled for all origins in development; nginx proxies `/api/` in Docker
-- **Frontend API URL**: Automatically detects Docker (port 8080) vs local dev to set correct backend URL
+- **Frontend API URL**: Detects local dev (port 5500) to use direct backend URL; otherwise uses relative URL for reverse proxy compatibility (Docker, Cloudflare Tunnel, etc.)
 
 ## Common Issues
 

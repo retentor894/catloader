@@ -1,7 +1,7 @@
 // API URL configuration
-// Always use relative URL since nginx proxies /api to backend
-// This works for: Docker, Cloudflare Tunnel, and any reverse proxy setup
-const API_URL = '';
+// - Local dev (port 5500): direct backend access on port 8000
+// - All other cases (Docker, Cloudflare Tunnel, reverse proxy): use relative URL
+const API_URL = window.location.port === '5500' ? 'http://localhost:8000' : '';
 
 const elements = {
     urlInput: document.getElementById('url-input'),
