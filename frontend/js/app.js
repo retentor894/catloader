@@ -4,8 +4,12 @@
 const API_URL = window.location.port === '5500' ? 'http://localhost:8000' : '';
 
 // Timeout for video info extraction (ms)
-// Must be slightly higher than backend timeout (90s) to ensure we receive backend's error response
-// Backend timeout: 90s, Frontend timeout: 95s (5s buffer for network latency)
+// IMPORTANT: Must be synchronized with backend timeout configuration.
+// Backend timeout: 90s (INFO_EXTRACTION_TIMEOUT in backend/app/config.py)
+// Frontend timeout: 95s (backend + 5s buffer for network latency)
+// This ensures we receive the backend's meaningful error message rather than
+// a generic browser timeout error.
+// If you change this, also update backend/app/config.py:INFO_EXTRACTION_TIMEOUT
 const INFO_FETCH_TIMEOUT = 95000;
 
 // Unified error messages - keep in sync with backend and nginx

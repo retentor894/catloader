@@ -198,7 +198,7 @@ class TestWithRetryAsync:
 
     @pytest.mark.asyncio
     async def test_retries_on_retryable_exception(self):
-        """Should retry on retryable exceptions."""
+        """Should retry on retryable exceptions and use correct backoff delays."""
         call_count = 0
 
         async def failing_then_success():
@@ -208,7 +208,7 @@ class TestWithRetryAsync:
                 raise NetworkError("Network error")
             return "success"
 
-        with patch('app.utils.asyncio.sleep'):  # Skip actual sleep
+        with patch('app.utils.asyncio.sleep') as mock_sleep:
             result = await with_retry_async(
                 failing_then_success,
                 max_retries=3,
@@ -218,14 +218,18 @@ class TestWithRetryAsync:
 
         assert result == "success"
         assert call_count == 3
+        # Verify backoff delays: 2 retries with exponential backoff (1.0s, 2.0s)
+        assert mock_sleep.call_count == 2
+        mock_sleep.assert_any_call(1.0)  # First retry delay
+        mock_sleep.assert_any_call(2.0)  # Second retry delay
 
     @pytest.mark.asyncio
     async def test_raises_after_max_retries(self):
-        """Should raise last exception after exhausting retries."""
+        """Should raise last exception after exhausting retries with correct delays."""
         async def always_fails():
             raise NetworkError("Persistent error")
 
-        with patch('app.utils.asyncio.sleep'):
+        with patch('app.utils.asyncio.sleep') as mock_sleep:
             with pytest.raises(NetworkError, match="Persistent error"):
                 await with_retry_async(
                     always_fails,
@@ -233,3 +237,8 @@ class TestWithRetryAsync:
                     retryable_exceptions=(NetworkError,),
                     operation_name="test"
                 )
+
+        # Verify backoff delays: 2 retries with exponential backoff (1.0s, 2.0s)
+        assert mock_sleep.call_count == 2
+        mock_sleep.assert_any_call(1.0)  # First retry delay
+        mock_sleep.assert_any_call(2.0)  # Second retry delay

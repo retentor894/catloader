@@ -7,7 +7,7 @@ import logging
 import threading
 import time
 from functools import wraps
-from typing import TypeVar, Callable, Type, Tuple
+from typing import TypeVar, Callable, Type, Tuple, Awaitable
 
 from .config import MAX_RETRIES, RETRY_BASE_DELAY, RETRY_MAX_DELAY, METRICS_ENABLED
 from .exceptions import TransientError
@@ -195,7 +195,7 @@ def with_retry(
 
 
 async def with_retry_async(
-    func: Callable[..., T],
+    func: Callable[..., Awaitable[T]],
     *args,
     max_retries: int = MAX_RETRIES,
     retryable_exceptions: Tuple[Type[Exception], ...] = RETRYABLE_EXCEPTIONS,
@@ -206,7 +206,7 @@ async def with_retry_async(
     Execute an async function with retry logic.
 
     Args:
-        func: The async function to execute
+        func: The async function to execute (must return an Awaitable)
         *args: Positional arguments for func
         max_retries: Maximum number of retry attempts
         retryable_exceptions: Tuple of exception types that should trigger retry

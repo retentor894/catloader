@@ -16,6 +16,16 @@ This ensures:
 
 Download timeout is longer (300s) because it includes the actual download which
 varies greatly based on video size and network speed.
+
+IMPORTANT - Frontend Synchronization:
+=====================================
+If you change INFO_EXTRACTION_TIMEOUT, you MUST also update the frontend:
+  - File: frontend/js/app.js
+  - Constant: INFO_FETCH_TIMEOUT (should be INFO_EXTRACTION_TIMEOUT + 5000ms)
+
+This coordination is necessary because frontend and backend cannot share code.
+The frontend timeout must be higher to receive the backend's error message
+rather than a generic browser timeout error.
 """
 
 import os
