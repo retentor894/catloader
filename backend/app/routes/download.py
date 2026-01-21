@@ -9,7 +9,7 @@ from functools import partial
 from urllib.parse import quote
 from typing import TypeVar, Callable, Tuple
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from ..models.schemas import URLRequest, VideoInfo, ErrorResponse
@@ -27,6 +27,7 @@ from ..config import (
     DOWNLOAD_INIT_TIMEOUT,
     SSE_STREAM_TIMEOUT,
     THREAD_POOL_MAX_WORKERS,
+    MAX_CONCURRENT_OPERATIONS,
 )
 from ..validation import validate_url as config_validate_url
 from ..utils import metrics
@@ -70,6 +71,11 @@ router = APIRouter(prefix="/api", tags=["download"])
 # Note: Using more workers to handle orphaned threads from timeouts
 _executor = ThreadPoolExecutor(max_workers=THREAD_POOL_MAX_WORKERS)
 
+# Semaphore to limit concurrent yt-dlp operations
+# This prevents thread pool exhaustion when many timeouts occur
+# (orphaned threads from timeouts continue running until yt-dlp's socket_timeout)
+_operations_semaphore = asyncio.Semaphore(MAX_CONCURRENT_OPERATIONS)
+
 
 def _generate_request_id() -> str:
     """Generate a short request ID for logging correlation."""
@@ -84,6 +90,11 @@ async def run_in_executor(func, *args, **kwargs):
     return await loop.run_in_executor(_executor, func, *args)
 
 
+class ServerAtCapacityError(Exception):
+    """Raised when the server cannot accept more concurrent operations."""
+    pass
+
+
 async def run_with_timeout(
     func: Callable[..., T],
     timeout: float,
@@ -91,7 +102,10 @@ async def run_with_timeout(
     **kwargs
 ) -> T:
     """
-    Run a blocking function with timeout handling.
+    Run a blocking function with timeout handling and concurrency limiting.
+
+    Uses a semaphore to limit concurrent operations and prevent thread pool
+    exhaustion when many timeouts occur.
 
     IMPORTANT: When timeout occurs, the underlying thread continues running until
     yt-dlp completes (limited by its socket_timeout). This is a known limitation
@@ -108,7 +122,18 @@ async def run_with_timeout(
 
     Raises:
         asyncio.TimeoutError: If the function doesn't complete within timeout
+        ServerAtCapacityError: If max concurrent operations limit is reached
     """
+    # Try to acquire semaphore with minimal wait
+    # If server is at capacity, fail fast instead of queueing
+    try:
+        await asyncio.wait_for(_operations_semaphore.acquire(), timeout=0.1)
+    except asyncio.TimeoutError:
+        raise ServerAtCapacityError(
+            f"Server at capacity ({MAX_CONCURRENT_OPERATIONS} concurrent operations). "
+            "Please try again later."
+        )
+
     loop = asyncio.get_event_loop()
 
     if kwargs:
@@ -130,6 +155,8 @@ async def run_with_timeout(
             f"internal timeout (orphaned thread)"
         )
         raise
+    finally:
+        _operations_semaphore.release()
 
 
 @router.post("/info", response_model=VideoInfo, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 504: {"model": ErrorResponse}})
@@ -151,6 +178,10 @@ async def get_info(request: URLRequest):
         elapsed = time.monotonic() - start_time
         logger.info(f"[{request_id}] Info extraction completed in {elapsed:.2f}s")
         return info
+    except ServerAtCapacityError as e:
+        elapsed = time.monotonic() - start_time
+        logger.warning(f"[{request_id}] Server at capacity after {elapsed:.2f}s")
+        raise HTTPException(status_code=503, detail=str(e))
     except asyncio.TimeoutError:
         elapsed = time.monotonic() - start_time
         metrics.record_timeout(endpoint="/api/info", elapsed=elapsed)
@@ -233,6 +264,10 @@ async def download(
                 "Cache-Control": "no-cache",
             }
         )
+    except ServerAtCapacityError as e:
+        elapsed = time.monotonic() - start_time
+        logger.warning(f"[{request_id}] Server at capacity after {elapsed:.2f}s")
+        raise HTTPException(status_code=503, detail=str(e))
     except asyncio.TimeoutError:
         elapsed = time.monotonic() - start_time
         metrics.record_timeout(endpoint="/api/download", elapsed=elapsed)

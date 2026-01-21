@@ -84,6 +84,13 @@ YTDLP_SOCKET_TIMEOUT = _get_int_env("CATLOADER_YTDLP_SOCKET_TIMEOUT", 30)
 # - Env: CATLOADER_THREAD_POOL_WORKERS
 THREAD_POOL_MAX_WORKERS = _get_int_env("CATLOADER_THREAD_POOL_WORKERS", 8)
 
+# Maximum concurrent yt-dlp operations
+# - Prevents thread pool exhaustion when many timeouts occur
+# - Should be less than THREAD_POOL_MAX_WORKERS to leave headroom
+# - When limit is reached, new requests get HTTP 503 immediately
+# - Env: CATLOADER_MAX_CONCURRENT_OPS
+MAX_CONCURRENT_OPERATIONS = _get_int_env("CATLOADER_MAX_CONCURRENT_OPS", 6)
+
 # =============================================================================
 # Retry Configuration
 # =============================================================================

@@ -12,7 +12,7 @@ import atexit
 from typing import Generator, Tuple, Dict, Any, Optional, NamedTuple
 from ..models.schemas import VideoInfo, VideoFormat
 from ..exceptions import VideoExtractionError, DownloadError, NetworkError, FileSizeLimitError
-from ..config import MAX_FILE_SIZE
+from ..config import MAX_FILE_SIZE, YTDLP_SOCKET_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,8 @@ CHUNK_SIZE = 8192
 PROGRESS_POLL_INTERVAL = 0.5
 THREAD_JOIN_TIMEOUT = 2.0
 DOWNLOAD_ID_BYTES = 32  # 256 bits of entropy
+TEMP_DIR_PREFIX = "catloader_"  # Prefix for temp directories to identify orphans
+ORPHAN_CLEANUP_AGE_SECONDS = 3600  # Clean orphaned dirs older than 1 hour
 
 CONTENT_TYPES = {
     '.mp4': 'video/mp4',
@@ -61,9 +63,10 @@ _shutdown_event = threading.Event()
 
 
 def _background_cleanup() -> None:
-    """Periodically clean up expired downloads."""
+    """Periodically clean up expired downloads and orphaned temp directories."""
     while not _shutdown_event.wait(timeout=60):
         _cleanup_expired_downloads()
+        _cleanup_orphaned_temp_dirs()
 
 
 def _cleanup_expired_downloads() -> None:
@@ -85,6 +88,44 @@ def _cleanup_expired_downloads() -> None:
 
     if dirs_to_clean:
         logger.info(f"Cleaned up {len(dirs_to_clean)} expired downloads")
+
+
+def _cleanup_orphaned_temp_dirs() -> None:
+    """
+    Clean up orphaned temp directories from failed/timed-out downloads.
+
+    When a timeout occurs before download_video() returns, the temp directory
+    is created but never tracked, leaving it orphaned. This function scans
+    the system temp directory for old catloader_* directories and removes them.
+    """
+    temp_base = tempfile.gettempdir()
+    current_time = time.time()
+    cleaned_count = 0
+
+    try:
+        for entry in os.scandir(temp_base):
+            # Only process directories with our prefix
+            if not entry.is_dir() or not entry.name.startswith(TEMP_DIR_PREFIX):
+                continue
+
+            try:
+                # Check directory age using modification time
+                dir_mtime = entry.stat().st_mtime
+                age_seconds = current_time - dir_mtime
+
+                if age_seconds > ORPHAN_CLEANUP_AGE_SECONDS:
+                    cleanup_temp_dir(entry.path)
+                    cleaned_count += 1
+            except OSError as e:
+                # Directory might have been deleted by another process
+                logger.debug(f"Could not check/clean orphan dir {entry.path}: {e}")
+                continue
+
+    except OSError as e:
+        logger.warning(f"Error scanning temp directory for orphans: {e}")
+
+    if cleaned_count > 0:
+        logger.info(f"Cleaned up {cleaned_count} orphaned temp directories")
 
 
 def _start_cleanup_thread() -> None:
@@ -176,7 +217,7 @@ COMMON_OPTS = {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-us,en;q=0.5',
     },
-    'socket_timeout': 30,
+    'socket_timeout': YTDLP_SOCKET_TIMEOUT,
     'retries': 3,
 }
 
@@ -339,7 +380,7 @@ def download_video(url: str, format_id: str, audio_only: bool = False) -> Downlo
         DownloadError: If download fails
         NetworkError: If network error occurs
     """
-    temp_dir = tempfile.mkdtemp()
+    temp_dir = tempfile.mkdtemp(prefix=TEMP_DIR_PREFIX)
     output_template = os.path.join(temp_dir, '%(title)s.%(ext)s')
 
     ydl_opts = {
@@ -435,7 +476,7 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
     Yields:
         SSE-formatted strings with progress data
     """
-    temp_dir = tempfile.mkdtemp()
+    temp_dir = tempfile.mkdtemp(prefix=TEMP_DIR_PREFIX)
     output_template = os.path.join(temp_dir, '%(title)s.%(ext)s')
     progress_queue: queue.Queue = queue.Queue()
     download_complete = threading.Event()
