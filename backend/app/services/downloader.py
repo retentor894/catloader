@@ -73,6 +73,10 @@ class DownloadResult(NamedTuple):
 THREAD_JOIN_TIMEOUT = 2.0  # seconds to wait for thread on cancellation
 DOWNLOAD_ID_BYTES = 32  # 256 bits of entropy for secure tokens
 
+# Maximum formats to return in API response (prevents large payloads)
+MAX_VIDEO_FORMATS_RETURNED = 10  # Top 10 video formats by quality
+MAX_AUDIO_FORMATS_RETURNED = 6   # Top 6 audio formats by bitrate
+
 CONTENT_TYPES = {
     '.mp4': 'video/mp4',
     '.webm': 'video/webm',
@@ -424,8 +428,8 @@ def get_video_info(url: str) -> VideoInfo:
         thumbnail=info.get('thumbnail'),
         duration=info.get('duration'),
         uploader=info.get('uploader'),
-        video_formats=video_formats[:10],
-        audio_formats=audio_formats[:6],
+        video_formats=video_formats[:MAX_VIDEO_FORMATS_RETURNED],
+        audio_formats=audio_formats[:MAX_AUDIO_FORMATS_RETURNED],
     )
 
 
@@ -696,18 +700,20 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
     ext = os.path.splitext(filename)[1].lower()
     content_type = get_content_type(ext)
 
-    # Store file info for the download endpoint to retrieve
-    safe_filename = filename.encode('ascii', 'ignore').decode('ascii')
-    if not safe_filename:
-        safe_filename = "download" + (".mp3" if audio_only else ".mp4")
-
     # Store download info and get ID
+    # Note: We preserve the original filename (including Unicode characters).
+    # The download endpoint will use sanitize_filename() to create both an
+    # ASCII fallback and a UTF-8 encoded version for Content-Disposition header.
     download_id = store_completed_download({
-        'filename': safe_filename,
+        'filename': filename,  # Preserve original Unicode filename
         'file_size': file_size,
         'content_type': content_type,
         'temp_dir': temp_dir,
         'file_path': downloaded_file,
     })
 
-    yield f"data: {json.dumps({'status': 'complete', 'download_id': download_id, 'filename': safe_filename, 'file_size': file_size})}\n\n"
+    # For the SSE response, provide an ASCII-safe version for display
+    # The actual download will use the original filename via the stored info
+    display_filename = filename.encode('ascii', 'replace').decode('ascii')
+
+    yield f"data: {json.dumps({'status': 'complete', 'download_id': download_id, 'filename': display_filename, 'file_size': file_size})}\n\n"

@@ -1,5 +1,25 @@
 """
 Utility functions for retry logic and metrics collection.
+
+Module Structure Note (SRP Consideration):
+------------------------------------------
+This module contains both Metrics and Retry functionality, which could be
+considered a violation of Single Responsibility Principle. They are kept
+together because:
+
+1. Both are cross-cutting concerns used throughout the application
+2. Retry logic uses Metrics to record retry attempts (tight coupling)
+3. Neither is complex enough to warrant separate files (< 100 lines each)
+4. Having a single utils module simplifies imports
+
+For larger applications, consider splitting into:
+- utils/metrics.py: Metrics class and related utilities
+- utils/retry.py: Retry logic and backoff calculations
+- utils/__init__.py: Re-export for backward compatibility
+
+To split, update imports in:
+- main.py: from .utils import metrics -> from .utils.metrics import metrics
+- routes/download.py: from ..utils import metrics -> from ..utils.metrics import metrics
 """
 
 import asyncio

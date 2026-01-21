@@ -80,8 +80,30 @@ def sanitize_filename(filename: str) -> Tuple[str, str]:
     """
     Sanitize filename for Content-Disposition header (RFC 5987 compliant).
 
+    This function prepares filenames for HTTP Content-Disposition headers by
+    providing both an ASCII fallback and a UTF-8 encoded version. This ensures
+    compatibility with both old browsers (ASCII) and modern browsers (UTF-8).
+
+    Args:
+        filename: The original filename, may contain Unicode characters.
+
     Returns:
-        Tuple of (ascii_filename, encoded_filename) for use in Content-Disposition header.
+        Tuple of (ascii_filename, encoded_filename):
+        - ascii_filename: ASCII-safe version with non-ASCII chars removed
+        - encoded_filename: URL-encoded UTF-8 version for filename* parameter
+
+    Examples:
+        >>> sanitize_filename("video.mp4")
+        ('video.mp4', 'video.mp4')
+
+        >>> sanitize_filename("日本語動画.mp4")
+        ('', '%E6%97%A5%E6%9C%AC%E8%AA%9E%E5%8B%95%E7%94%BB.mp4')
+
+        >>> sanitize_filename('video "test".mp4')
+        ("video 'test'.mp4", "video%20%22test%22.mp4")
+
+    Usage in Content-Disposition header:
+        Content-Disposition: attachment; filename="video.mp4"; filename*=UTF-8''video.mp4
     """
     # Remove problematic characters
     safe_filename = filename.replace('"', "'").replace('\n', '').replace('\r', '')

@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import yt_dlp
 from .routes import download
 from .utils import metrics
+from .models.schemas import HealthResponse, HealthDetailedResponse
 
 logger = logging.getLogger(__name__)
 
@@ -38,30 +39,25 @@ app = FastAPI(
 )
 
 # Configure CORS from environment variable
-# CORS_ORIGINS can be a comma-separated list of allowed origins
+# CORS_ORIGINS can be a comma-separated list of allowed origins, or "*" for all
 # Default to localhost origins for development
 cors_origins_env = os.getenv("CORS_ORIGINS", "http://localhost:5500,http://localhost:8080,http://127.0.0.1:5500")
 allow_all_origins = cors_origins_env.strip() == "*"
 
-if allow_all_origins:
-    # Allow all origins (not recommended for production with credentials)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,  # Cannot use credentials with wildcard origin
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["*"],
-    )
-else:
-    # Parse comma-separated origins
-    cors_origins = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=cors_origins,
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["*"],
-    )
+# Compute CORS settings based on configuration
+# Note: credentials cannot be used with wildcard origin per CORS spec
+cors_origins = ["*"] if allow_all_origins else [
+    origin.strip() for origin in cors_origins_env.split(",") if origin.strip()
+]
+cors_credentials = not allow_all_origins
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=cors_credentials,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 # Include routers
 app.include_router(download.router)
@@ -72,17 +68,17 @@ async def root():
     return {"message": "CatLoader API", "status": "running"}
 
 
-@app.get("/health")
+@app.get("/health", response_model=HealthResponse)
 async def health():
     """
     Health check endpoint with system status.
 
     Returns basic health for load balancers, with optional detailed info.
     """
-    return {"status": "healthy"}
+    return HealthResponse(status="healthy")
 
 
-@app.get("/health/detailed")
+@app.get("/health/detailed", response_model=HealthDetailedResponse)
 async def health_detailed():
     """
     Detailed health check with system metrics.
@@ -118,10 +114,10 @@ async def health_detailed():
     except Exception:
         ytdlp_info = {"status": "unavailable"}
 
-    return {
-        "status": "healthy",
-        "thread_pool": thread_pool_status,
-        "disk": disk_status,
-        "metrics": metrics_stats,
-        "yt_dlp": ytdlp_info,
-    }
+    return HealthDetailedResponse(
+        status="healthy",
+        thread_pool=thread_pool_status,
+        disk=disk_status,
+        metrics=metrics_stats,
+        yt_dlp=ytdlp_info,
+    )
