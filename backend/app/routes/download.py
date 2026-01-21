@@ -312,8 +312,9 @@ async def download(
                 # Consuming the generator triggers its finally block which cleans up temp files
                 for _ in file_stream:
                     pass
-            except Exception:
-                pass  # Best effort cleanup
+            except Exception as cleanup_error:
+                # Best effort cleanup - log but don't raise since we're already in error handling
+                logger.debug(f"Error during file stream cleanup: {cleanup_error}")
 
 
 @router.get("/download/progress")

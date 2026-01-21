@@ -84,6 +84,18 @@ class Metrics:
                 "errors": self._error_count,
             }
 
+    def reset(self) -> None:
+        """Reset all metrics counters to zero.
+
+        Useful for testing and periodic metrics collection where counters
+        are exported and then reset.
+        """
+        with self._lock:
+            self._timeout_count = 0
+            self._retry_count = 0
+            self._success_count = 0
+            self._error_count = 0
+
 
 # Global metrics instance
 metrics = Metrics()
@@ -91,6 +103,12 @@ metrics = Metrics()
 
 # =============================================================================
 # Retry Logic
+# =============================================================================
+# Note: with_retry decorator is a general-purpose utility that may be used by:
+# - External consumers of this module
+# - Future endpoints that need synchronous retry logic
+# - Integration with third-party libraries that don't support async
+# Currently, async operations use with_retry_async directly.
 # =============================================================================
 
 # Exceptions that should trigger a retry (transient errors)

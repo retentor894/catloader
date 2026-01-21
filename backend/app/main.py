@@ -90,11 +90,19 @@ async def health_detailed():
     Use for debugging and monitoring dashboards.
     """
     # Thread pool status
+    # Note: Accessing private attributes (_max_workers, _threads) for monitoring.
+    # These are implementation details of ThreadPoolExecutor and may change in future Python versions.
     executor = download._executor
-    thread_pool_status = {
-        "max_workers": executor._max_workers,
-        "active_threads": len(executor._threads),
-    }
+    try:
+        thread_pool_status = {
+            "max_workers": executor._max_workers,
+            "active_threads": len(executor._threads),
+        }
+    except AttributeError:
+        # Fallback if private attributes change in future Python versions
+        thread_pool_status = {
+            "status": "monitoring unavailable",
+        }
 
     # Disk space for temp directory
     temp_dir = tempfile.gettempdir()

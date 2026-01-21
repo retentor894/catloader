@@ -77,6 +77,28 @@ class TestMetrics:
         assert stats["successes"] == expected
         assert stats["errors"] == expected
 
+    def test_reset_clears_all_counters(self):
+        """Should reset all counters to zero."""
+        metrics = Metrics()
+        # Record some metrics
+        metrics.record_timeout(endpoint="/test", elapsed=1.0)
+        metrics.record_retry(operation="test", attempt=1, delay=0.1, error="e")
+        metrics.record_success(operation="test", elapsed=1.0)
+        metrics.record_error(operation="test", error="e", elapsed=1.0)
+
+        # Verify non-zero
+        stats = metrics.get_stats()
+        assert stats["timeouts"] == 1
+        assert stats["retries"] == 1
+
+        # Reset and verify all zeros
+        metrics.reset()
+        stats = metrics.get_stats()
+        assert stats["timeouts"] == 0
+        assert stats["retries"] == 0
+        assert stats["successes"] == 0
+        assert stats["errors"] == 0
+
 
 class TestCalculateBackoffDelay:
     """Test exponential backoff delay calculation."""

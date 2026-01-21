@@ -16,13 +16,22 @@ import re
 # - IPv6 addresses in brackets (e.g., [::1], [2001:db8::1])
 # - Optional port numbers
 # - Optional paths and query strings
+#
+# IPv6 LIMITATION: The regex uses a simplified pattern that covers common IPv6
+# formats but is not fully RFC 5952 compliant. It accepts:
+#   - [2001:db8::1], [::1], [fe80::1]
+# But may incorrectly accept some invalid forms or reject edge cases like:
+#   - Zone IDs (e.g., [fe80::1%eth0])
+#   - IPv4-mapped addresses (e.g., [::ffff:192.0.2.1])
+# This is acceptable for CatLoader's use case (video URLs from major platforms
+# which use domain names, not raw IPv6 addresses).
 URL_PATTERN = re.compile(
     r'^https?://'  # http:// or https://
     r'(?:'
     r'(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,}|'  # domain
     r'localhost|'  # or localhost
     r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|'  # or IPv4
-    r'\[(?:[A-F0-9]{0,4}:){2,7}[A-F0-9]{0,4}\]'  # or IPv6 in brackets
+    r'\[(?:[A-F0-9]{0,4}:){2,7}[A-F0-9]{0,4}\]'  # or IPv6 in brackets (simplified)
     r')'
     r'(?::\d+)?'  # optional port
     r'(?:/?|[/?]\S+)$',  # path
