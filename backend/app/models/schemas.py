@@ -1,7 +1,7 @@
 from pydantic import BaseModel, field_validator
 from typing import Optional, List
 
-from ..config import validate_url as config_validate_url
+from ..validation import validate_url as config_validate_url
 
 
 class URLRequest(BaseModel):

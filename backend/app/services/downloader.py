@@ -11,7 +11,8 @@ import time
 import atexit
 from typing import Generator, Tuple, Dict, Any, Optional, NamedTuple
 from ..models.schemas import VideoInfo, VideoFormat
-from ..exceptions import VideoExtractionError, DownloadError, NetworkError
+from ..exceptions import VideoExtractionError, DownloadError, NetworkError, FileSizeLimitError
+from ..config import MAX_FILE_SIZE
 
 logger = logging.getLogger(__name__)
 
@@ -392,6 +393,16 @@ def download_video(url: str, format_id: str, audio_only: bool = False) -> Downlo
 
     filename = os.path.basename(downloaded_file)
     file_size = os.path.getsize(downloaded_file)
+
+    # Check file size limit (0 means no limit)
+    if MAX_FILE_SIZE > 0 and file_size > MAX_FILE_SIZE:
+        cleanup_temp_dir(temp_dir)
+        size_mb = file_size / (1024 * 1024)
+        limit_mb = MAX_FILE_SIZE / (1024 * 1024)
+        raise FileSizeLimitError(
+            f"File size ({size_mb:.1f} MB) exceeds maximum allowed ({limit_mb:.1f} MB)"
+        )
+
     ext = os.path.splitext(filename)[1].lower()
     content_type = get_content_type(ext)
 

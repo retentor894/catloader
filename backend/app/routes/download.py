@@ -21,14 +21,14 @@ from ..services.downloader import (
     cleanup_temp_dir,
     CHUNK_SIZE,
 )
-from ..exceptions import VideoExtractionError, DownloadError, NetworkError, CatLoaderError
+from ..exceptions import VideoExtractionError, DownloadError, NetworkError, CatLoaderError, FileSizeLimitError
 from ..config import (
     INFO_EXTRACTION_TIMEOUT,
     DOWNLOAD_INIT_TIMEOUT,
     SSE_STREAM_TIMEOUT,
     THREAD_POOL_MAX_WORKERS,
-    validate_url as config_validate_url,
 )
+from ..validation import validate_url as config_validate_url
 from ..utils import metrics
 
 logger = logging.getLogger(__name__)
@@ -245,6 +245,11 @@ async def download(
             status_code=504,
             detail="Server timeout. The video may be too long or the server is busy. Please try again."
         )
+    except FileSizeLimitError as e:
+        elapsed = time.monotonic() - start_time
+        metrics.record_error(operation="download", error=str(e)[:100], elapsed=elapsed)
+        logger.warning(f"[{request_id}] File size limit exceeded after {elapsed:.2f}s: {e}")
+        raise HTTPException(status_code=413, detail=str(e))
     except DownloadError as e:
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="download", error=str(e)[:100], elapsed=elapsed)

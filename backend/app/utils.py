@@ -10,7 +10,7 @@ from functools import wraps
 from typing import TypeVar, Callable, Type, Tuple
 
 from .config import MAX_RETRIES, RETRY_BASE_DELAY, RETRY_MAX_DELAY, METRICS_ENABLED
-from .exceptions import NetworkError
+from .exceptions import TransientError
 
 logger = logging.getLogger(__name__)
 
@@ -94,8 +94,10 @@ metrics = Metrics()
 # =============================================================================
 
 # Exceptions that should trigger a retry (transient errors)
+# TransientError is the base class for all transient errors in CatLoader
+# Also includes Python built-in transient errors
 RETRYABLE_EXCEPTIONS: Tuple[Type[Exception], ...] = (
-    NetworkError,
+    TransientError,  # Base class covers NetworkError, RateLimitError, ServerError
     ConnectionError,
     TimeoutError,
 )

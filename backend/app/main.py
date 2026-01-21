@@ -1,9 +1,12 @@
 import os
+import shutil
 import logging
+import tempfile
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routes import download
+from .utils import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -70,4 +73,48 @@ async def root():
 
 @app.get("/health")
 async def health():
+    """
+    Health check endpoint with system status.
+
+    Returns basic health for load balancers, with optional detailed info.
+    """
     return {"status": "healthy"}
+
+
+@app.get("/health/detailed")
+async def health_detailed():
+    """
+    Detailed health check with system metrics.
+
+    Includes thread pool status, disk space, and metrics.
+    Use for debugging and monitoring dashboards.
+    """
+    # Thread pool status
+    executor = download._executor
+    thread_pool_status = {
+        "max_workers": executor._max_workers,
+        "active_threads": len(executor._threads),
+    }
+
+    # Disk space for temp directory
+    temp_dir = tempfile.gettempdir()
+    try:
+        disk_usage = shutil.disk_usage(temp_dir)
+        disk_status = {
+            "temp_dir": temp_dir,
+            "total_gb": round(disk_usage.total / (1024**3), 2),
+            "free_gb": round(disk_usage.free / (1024**3), 2),
+            "used_percent": round((disk_usage.used / disk_usage.total) * 100, 1),
+        }
+    except OSError:
+        disk_status = {"error": "Unable to check disk space"}
+
+    # Application metrics
+    metrics_stats = metrics.get_stats()
+
+    return {
+        "status": "healthy",
+        "thread_pool": thread_pool_status,
+        "disk": disk_status,
+        "metrics": metrics_stats,
+    }

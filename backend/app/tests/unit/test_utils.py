@@ -12,7 +12,7 @@ from app.utils import (
     with_retry_async,
     RETRYABLE_EXCEPTIONS,
 )
-from app.exceptions import NetworkError
+from app.exceptions import NetworkError, TransientError
 
 
 class TestMetrics:

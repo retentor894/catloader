@@ -19,7 +19,6 @@ varies greatly based on video size and network speed.
 """
 
 import os
-import re
 
 def _get_int_env(name: str, default: int) -> int:
     """Get integer from environment variable with default."""
@@ -104,6 +103,17 @@ RETRY_BASE_DELAY = _get_float_env("CATLOADER_RETRY_BASE_DELAY", 1.0)
 RETRY_MAX_DELAY = _get_float_env("CATLOADER_RETRY_MAX_DELAY", 10.0)
 
 # =============================================================================
+# Download Limits
+# =============================================================================
+
+# Maximum file size allowed for download (bytes)
+# - Prevents disk exhaustion from very large files
+# - Default: 2GB (2147483648 bytes)
+# - Set to 0 to disable limit
+# - Env: CATLOADER_MAX_FILE_SIZE
+MAX_FILE_SIZE = _get_int_env("CATLOADER_MAX_FILE_SIZE", 2 * 1024 * 1024 * 1024)  # 2GB
+
+# =============================================================================
 # Metrics Configuration
 # =============================================================================
 
@@ -111,42 +121,4 @@ RETRY_MAX_DELAY = _get_float_env("CATLOADER_RETRY_MAX_DELAY", 10.0)
 # - Env: CATLOADER_METRICS_ENABLED
 METRICS_ENABLED = os.environ.get("CATLOADER_METRICS_ENABLED", "true").lower() == "true"
 
-# =============================================================================
-# URL Validation Pattern
-# =============================================================================
-
-URL_PATTERN = re.compile(
-    r'^https?://'  # http:// or https://
-    r'(?:'
-    r'(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,}|'  # domain
-    r'localhost|'  # or localhost
-    r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|'  # or IPv4
-    r'\[(?:[A-F0-9]{0,4}:){2,7}[A-F0-9]{0,4}\]'  # or IPv6 in brackets (e.g., [::1], [2001:db8::1])
-    r')'
-    r'(?::\d+)?'  # optional port
-    r'(?:/?|[/?]\S+)$',  # path
-    re.IGNORECASE
-)
-
-
-def validate_url(url: str) -> str:
-    """
-    Validate URL format and return cleaned URL.
-
-    Args:
-        url: The URL to validate
-
-    Returns:
-        The cleaned/trimmed URL
-
-    Raises:
-        ValueError: If URL is empty or invalid format
-    """
-    if not url or not url.strip():
-        raise ValueError("URL cannot be empty")
-
-    url = url.strip()
-    if not URL_PATTERN.match(url):
-        raise ValueError("Invalid URL format. URL must start with http:// or https://")
-
-    return url
+# Note: URL validation has been moved to validation.py (SRP)
