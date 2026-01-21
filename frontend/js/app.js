@@ -17,6 +17,13 @@ const ERROR_MESSAGES = {
     default: 'An error occurred. Please try again later.',
 };
 
+// UI timing constants (ms)
+const UI_TIMINGS = {
+    IFRAME_CLEANUP_DELAY: 60000,      // Time to wait before removing download iframe (1 min)
+    SUCCESS_RESET_DELAY: 2000,        // Delay before resetting button after successful download
+    ERROR_RESET_DELAY: 3000,          // Delay before resetting button after error
+};
+
 const elements = {
     urlInput: document.getElementById('url-input'),
     searchBtn: document.getElementById('search-btn'),
@@ -173,7 +180,7 @@ function downloadFile(formatId, audioOnly, container) {
                 iframe.style.display = 'none';
                 iframe.src = downloadUrl;
                 document.body.appendChild(iframe);
-                setTimeout(() => document.body.removeChild(iframe), 60000);
+                setTimeout(() => document.body.removeChild(iframe), UI_TIMINGS.IFRAME_CLEANUP_DELAY);
 
                 // Reset UI after delay
                 setTimeout(() => {
@@ -182,7 +189,7 @@ function downloadFile(formatId, audioOnly, container) {
                     progressBar.classList.add('hidden');
                     progressText.classList.add('hidden');
                     progressFill.style.width = '0%';
-                }, 2000);
+                }, UI_TIMINGS.SUCCESS_RESET_DELAY);
                 break;
 
             case 'error':
@@ -195,7 +202,7 @@ function downloadFile(formatId, audioOnly, container) {
                     btn.classList.remove('downloading');
                     btn.textContent = btn.dataset.originalLabel;
                     progressText.classList.add('hidden');
-                }, 3000);
+                }, UI_TIMINGS.ERROR_RESET_DELAY);
                 break;
 
             case 'waiting':
@@ -214,7 +221,7 @@ function downloadFile(formatId, audioOnly, container) {
             btn.classList.remove('downloading');
             btn.textContent = btn.dataset.originalLabel;
             progressText.classList.add('hidden');
-        }, 3000);
+        }, UI_TIMINGS.ERROR_RESET_DELAY);
     };
 }
 

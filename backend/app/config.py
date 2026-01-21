@@ -19,6 +19,7 @@ varies greatly based on video size and network speed.
 """
 
 import os
+import re
 
 def _get_int_env(name: str, default: int) -> int:
     """Get integer from environment variable with default."""
@@ -113,8 +114,6 @@ METRICS_ENABLED = os.environ.get("CATLOADER_METRICS_ENABLED", "true").lower() ==
 # =============================================================================
 # URL Validation Pattern
 # =============================================================================
-
-import re
 
 URL_PATTERN = re.compile(
     r'^https?://'  # http:// or https://

@@ -34,12 +34,6 @@ class VideoInfo(BaseModel):
     audio_formats: List[VideoFormat] = []
 
 
-class DownloadRequest(BaseModel):
-    url: str
-    format_id: str
-    audio_only: bool = False
-
-
 class ErrorResponse(BaseModel):
     """Error response schema matching FastAPI's HTTPException format."""
     detail: str

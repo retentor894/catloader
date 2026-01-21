@@ -1,8 +1,11 @@
 import os
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routes import download
+
+logger = logging.getLogger(__name__)
 
 # Configure logging
 logging.basicConfig(
@@ -10,10 +13,24 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle - startup and shutdown events."""
+    # Startup
+    logger.info("CatLoader API starting up")
+    yield
+    # Shutdown - cleanup thread pool executor
+    logger.info("CatLoader API shutting down - cleaning up resources")
+    download._executor.shutdown(wait=False)
+    logger.info("Thread pool executor shutdown complete")
+
+
 app = FastAPI(
     title="CatLoader",
     description="Video downloader API supporting 1000+ sites",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Configure CORS from environment variable
