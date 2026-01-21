@@ -5,6 +5,7 @@ import tempfile
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import yt_dlp
 from .routes import download
 from .utils import metrics
 
@@ -25,7 +26,7 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown - cleanup thread pool executor
     logger.info("CatLoader API shutting down - cleaning up resources")
-    download._executor.shutdown(wait=False)
+    download.shutdown_executor(wait=False)
     logger.info("Thread pool executor shutdown complete")
 
 
@@ -89,20 +90,8 @@ async def health_detailed():
     Includes thread pool status, disk space, and metrics.
     Use for debugging and monitoring dashboards.
     """
-    # Thread pool status
-    # Note: Accessing private attributes (_max_workers, _threads) for monitoring.
-    # These are implementation details of ThreadPoolExecutor and may change in future Python versions.
-    executor = download._executor
-    try:
-        thread_pool_status = {
-            "max_workers": executor._max_workers,
-            "active_threads": len(executor._threads),
-        }
-    except AttributeError:
-        # Fallback if private attributes change in future Python versions
-        thread_pool_status = {
-            "status": "monitoring unavailable",
-        }
+    # Thread pool status (using public API to avoid coupling)
+    thread_pool_status = download.get_executor_stats()
 
     # Disk space for temp directory
     temp_dir = tempfile.gettempdir()
@@ -120,9 +109,19 @@ async def health_detailed():
     # Application metrics
     metrics_stats = metrics.get_stats()
 
+    # yt-dlp info
+    try:
+        ytdlp_info = {
+            "version": yt_dlp.version.__version__,
+            "status": "available",
+        }
+    except Exception:
+        ytdlp_info = {"status": "unavailable"}
+
     return {
         "status": "healthy",
         "thread_pool": thread_pool_status,
         "disk": disk_status,
         "metrics": metrics_stats,
+        "yt_dlp": ytdlp_info,
     }

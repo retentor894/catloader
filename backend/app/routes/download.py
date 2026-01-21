@@ -19,7 +19,6 @@ from ..services.downloader import (
     download_video_with_progress,
     remove_completed_download,
     cleanup_temp_dir,
-    CHUNK_SIZE,
 )
 from ..exceptions import VideoExtractionError, DownloadError, NetworkError, CatLoaderError, FileSizeLimitError
 from ..config import (
@@ -28,6 +27,7 @@ from ..config import (
     SSE_STREAM_TIMEOUT,
     THREAD_POOL_MAX_WORKERS,
     MAX_CONCURRENT_OPERATIONS,
+    CHUNK_SIZE,
 )
 from ..validation import validate_url as config_validate_url, validate_format_id
 from ..utils import metrics
@@ -88,6 +88,37 @@ _executor = ThreadPoolExecutor(max_workers=THREAD_POOL_MAX_WORKERS)
 # This prevents thread pool exhaustion when many timeouts occur
 # (orphaned threads from timeouts continue running until yt-dlp's socket_timeout)
 _operations_semaphore = asyncio.Semaphore(MAX_CONCURRENT_OPERATIONS)
+
+
+# =============================================================================
+# Public API for executor management (used by main.py)
+# =============================================================================
+
+def get_executor_stats() -> dict:
+    """
+    Get thread pool executor statistics for monitoring.
+
+    Returns:
+        Dictionary with executor stats, or error status if unavailable.
+    """
+    try:
+        return {
+            "max_workers": _executor._max_workers,
+            "active_threads": len(_executor._threads),
+        }
+    except AttributeError:
+        # Fallback if private attributes change in future Python versions
+        return {"status": "monitoring unavailable"}
+
+
+def shutdown_executor(wait: bool = False) -> None:
+    """
+    Shutdown the thread pool executor.
+
+    Args:
+        wait: If True, wait for all pending futures to complete.
+    """
+    _executor.shutdown(wait=wait)
 
 
 def _generate_request_id() -> str:

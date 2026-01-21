@@ -9,10 +9,47 @@ import threading
 import secrets
 import time
 import atexit
-from typing import Generator, Tuple, Dict, Any, Optional, NamedTuple
+from typing import Generator, Tuple, Dict, Any, Optional, NamedTuple, TypedDict
 from ..models.schemas import VideoInfo, VideoFormat
+
+
+# =============================================================================
+# Type Definitions for yt-dlp hooks
+# =============================================================================
+
+class ProgressHookData(TypedDict, total=False):
+    """Type hints for yt-dlp progress_hook callback data."""
+    status: str  # 'downloading', 'finished', 'error'
+    downloaded_bytes: int
+    total_bytes: Optional[int]
+    total_bytes_estimate: Optional[int]
+    filename: str
+    tmpfilename: str
+    elapsed: float
+    speed: Optional[float]
+    eta: Optional[int]
+    fragment_index: Optional[int]
+    fragment_count: Optional[int]
+
+
+class PostprocessorHookData(TypedDict, total=False):
+    """Type hints for yt-dlp postprocessor_hook callback data."""
+    status: str  # 'started', 'processing', 'finished'
+    postprocessor: str
+    info_dict: Dict[str, Any]
+
+
 from ..exceptions import VideoExtractionError, DownloadError, NetworkError, FileSizeLimitError
-from ..config import MAX_FILE_SIZE, YTDLP_SOCKET_TIMEOUT
+from ..config import (
+    MAX_FILE_SIZE,
+    YTDLP_SOCKET_TIMEOUT,
+    DOWNLOAD_EXPIRY_SECONDS,
+    MAX_COMPLETED_DOWNLOADS,
+    CHUNK_SIZE,
+    ORPHAN_CLEANUP_AGE_SECONDS,
+    TEMP_DIR_PREFIX,
+    YTDLP_USER_AGENT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,16 +62,15 @@ class DownloadResult(NamedTuple):
     stream: Generator[bytes, None, None]
 
 # =============================================================================
-# Constants
+# Local Constants (not configurable via environment)
 # =============================================================================
-DOWNLOAD_EXPIRY_SECONDS = 300  # 5 minutes
-MAX_CONCURRENT_DOWNLOADS = 100
-CHUNK_SIZE = 8192
-PROGRESS_POLL_INTERVAL = 0.5
-THREAD_JOIN_TIMEOUT = 2.0
-DOWNLOAD_ID_BYTES = 32  # 256 bits of entropy
-TEMP_DIR_PREFIX = "catloader_"  # Prefix for temp directories to identify orphans
-ORPHAN_CLEANUP_AGE_SECONDS = 3600  # Clean orphaned dirs older than 1 hour
+# Note: Configurable constants are in config.py:
+# - DOWNLOAD_EXPIRY_SECONDS, MAX_COMPLETED_DOWNLOADS, CHUNK_SIZE
+# - ORPHAN_CLEANUP_AGE_SECONDS, TEMP_DIR_PREFIX, YTDLP_USER_AGENT
+
+PROGRESS_POLL_INTERVAL = 0.5  # seconds between progress updates
+THREAD_JOIN_TIMEOUT = 2.0  # seconds to wait for thread on cancellation
+DOWNLOAD_ID_BYTES = 32  # 256 bits of entropy for secure tokens
 
 CONTENT_TYPES = {
     '.mp4': 'video/mp4',
@@ -167,7 +203,7 @@ def store_completed_download(file_info: Dict[str, Any]) -> str:
         dirs_to_clean.extend(_collect_expired_downloads_locked())
 
         # Check capacity and remove oldest if needed
-        if len(_completed_downloads) >= MAX_CONCURRENT_DOWNLOADS:
+        if len(_completed_downloads) >= MAX_COMPLETED_DOWNLOADS:
             oldest_key = min(
                 _completed_downloads.keys(),
                 key=lambda k: _completed_downloads[k].get('created_at', 0)
@@ -213,13 +249,40 @@ COMMON_OPTS = {
     'quiet': True,
     'no_warnings': True,
     'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': YTDLP_USER_AGENT,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-us,en;q=0.5',
     },
     'socket_timeout': YTDLP_SOCKET_TIMEOUT,
     'retries': 3,
 }
+
+
+def _configure_format_options(ydl_opts: Dict[str, Any], format_id: str, audio_only: bool) -> None:
+    """
+    Configure yt-dlp format options for download.
+
+    This helper function eliminates duplication between download_video()
+    and download_video_with_progress().
+
+    Args:
+        ydl_opts: yt-dlp options dictionary to modify in-place
+        format_id: Format ID string or 'best'
+        audio_only: Whether to download audio only
+    """
+    if audio_only:
+        ydl_opts['format'] = 'bestaudio/best'
+        ydl_opts['postprocessors'] = [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }]
+    else:
+        if format_id and format_id != 'best':
+            ydl_opts['format'] = format_id
+        else:
+            ydl_opts['format'] = 'bestvideo+bestaudio/best'
+        ydl_opts['merge_output_format'] = 'mp4'
 
 
 def get_video_info(url: str) -> VideoInfo:
@@ -393,20 +456,7 @@ def download_video(url: str, format_id: str, audio_only: bool = False) -> Downlo
         **COMMON_OPTS,
         'outtmpl': output_template,
     }
-
-    if audio_only:
-        ydl_opts['format'] = 'bestaudio/best'
-        ydl_opts['postprocessors'] = [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }]
-    else:
-        if format_id and format_id != 'best':
-            ydl_opts['format'] = format_id
-        else:
-            ydl_opts['format'] = 'bestvideo+bestaudio/best'
-        ydl_opts['merge_output_format'] = 'mp4'
+    _configure_format_options(ydl_opts, format_id, audio_only)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -496,7 +546,7 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
     cancelled = threading.Event()
     download_error: Dict[str, Any] = {}
 
-    def progress_hook(d: Dict[str, Any]) -> None:
+    def progress_hook(d: ProgressHookData) -> None:
         """Hook called by yt-dlp with download progress."""
         # Check if cancelled
         if cancelled.is_set():
@@ -528,7 +578,7 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
                 'message': 'Processing file...',
             })
 
-    def postprocessor_hook(d: Dict[str, Any]) -> None:
+    def postprocessor_hook(d: PostprocessorHookData) -> None:
         """Hook called by yt-dlp during post-processing."""
         if cancelled.is_set():
             raise Exception("Download cancelled by client")
@@ -550,20 +600,7 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
             'progress_hooks': [progress_hook],
             'postprocessor_hooks': [postprocessor_hook],
         }
-
-        if audio_only:
-            ydl_opts['format'] = 'bestaudio/best'
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
-        else:
-            if format_id and format_id != 'best':
-                ydl_opts['format'] = format_id
-            else:
-                ydl_opts['format'] = 'bestvideo+bestaudio/best'
-            ydl_opts['merge_output_format'] = 'mp4'
+        _configure_format_options(ydl_opts, format_id, audio_only)
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:

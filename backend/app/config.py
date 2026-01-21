@@ -131,6 +131,40 @@ RETRY_MAX_DELAY = _get_float_env("CATLOADER_RETRY_MAX_DELAY", 10.0)
 MAX_FILE_SIZE = _get_int_env("CATLOADER_MAX_FILE_SIZE", 2 * 1024 * 1024 * 1024)  # 2GB
 
 # =============================================================================
+# Downloader Configuration
+# =============================================================================
+
+# How long completed downloads are kept before cleanup (seconds)
+# - Env: CATLOADER_DOWNLOAD_EXPIRY
+DOWNLOAD_EXPIRY_SECONDS = _get_int_env("CATLOADER_DOWNLOAD_EXPIRY", 300)  # 5 minutes
+
+# Maximum completed downloads to keep in memory
+# - When limit is reached, oldest downloads are evicted
+# - Env: CATLOADER_MAX_DOWNLOADS
+MAX_COMPLETED_DOWNLOADS = _get_int_env("CATLOADER_MAX_DOWNLOADS", 100)
+
+# Chunk size for streaming file downloads (bytes)
+# - Env: CATLOADER_CHUNK_SIZE
+CHUNK_SIZE = _get_int_env("CATLOADER_CHUNK_SIZE", 8192)
+
+# Age threshold for cleaning orphaned temp directories (seconds)
+# - Directories older than this are considered abandoned and cleaned up
+# - Env: CATLOADER_ORPHAN_CLEANUP_AGE
+ORPHAN_CLEANUP_AGE_SECONDS = _get_int_env("CATLOADER_ORPHAN_CLEANUP_AGE", 3600)  # 1 hour
+
+# Prefix for temporary directories (used to identify orphans)
+TEMP_DIR_PREFIX = "catloader_"
+
+# User-Agent for yt-dlp HTTP requests
+# - Some sites block requests without a browser-like User-Agent
+# - Update periodically to match current browser versions
+# - Env: CATLOADER_USER_AGENT
+YTDLP_USER_AGENT = os.environ.get(
+    "CATLOADER_USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+# =============================================================================
 # Metrics Configuration
 # =============================================================================
 
@@ -166,3 +200,21 @@ METRICS_ENABLED = os.environ.get("CATLOADER_METRICS_ENABLED", "true").lower() ==
 # 256 bits of entropy), making them effectively unguessable. However, the
 # download endpoint should still only be exposed to authenticated users in
 # production environments where security is critical.
+#
+# CIRCUIT BREAKER (future enhancement):
+# -------------------------------------
+# For high-availability deployments, consider implementing a circuit breaker
+# pattern to handle upstream failures (YouTube, Vimeo, etc.) gracefully.
+#
+# When an upstream service fails repeatedly:
+# 1. Open the circuit (reject requests immediately with 503)
+# 2. Wait for a cooldown period
+# 3. Allow a test request through (half-open state)
+# 4. If successful, close the circuit; if failed, keep it open
+#
+# Libraries to consider:
+# - pybreaker: https://github.com/danielfm/pybreaker
+# - aiobreaker: https://github.com/arlyon/aiobreaker (async-compatible)
+#
+# This would prevent resource exhaustion when upstream services are down
+# and provide faster failure responses to users.
