@@ -13,6 +13,45 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from ..models.schemas import URLRequest, VideoInfo, ErrorResponse
+
+
+class SemaphoreGuardedIterator:
+    """
+    Wrapper that guarantees semaphore release when iteration ends.
+
+    This solves a race condition where if a client disconnects before the
+    generator starts iterating, the generator's finally block never executes.
+    This wrapper ensures release() is called when close() is invoked by
+    Starlette, even if iteration never started.
+    """
+
+    def __init__(self, generator, semaphore: asyncio.Semaphore):
+        self._generator = generator
+        self._semaphore = semaphore
+        self._released = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        try:
+            return next(self._generator)
+        except StopIteration:
+            self._release()
+            raise
+
+    def close(self):
+        """Called by Starlette when response ends or client disconnects."""
+        self._release()
+        if hasattr(self._generator, 'close'):
+            self._generator.close()
+
+    def _release(self):
+        if not self._released:
+            self._released = True
+            self._semaphore.release()
+
+
 from ..services.downloader import (
     get_video_info,
     download_video,
@@ -460,12 +499,16 @@ async def download_progress(
             logger.exception(f"Error in download progress stream: {e}")
             metrics.record_error(operation="download_progress", error=str(e)[:100], elapsed=time.monotonic() - start_time)
             yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
-        finally:
-            # Release semaphore when stream ends (success, error, or client disconnect)
-            semaphore.release()
+        # Note: Semaphore release is handled by SemaphoreGuardedIterator.close()
+        # This guarantees release even if client disconnects before iteration starts
+
+    # Wrap generator to guarantee semaphore release on close()
+    # This solves the race condition where client disconnect before iteration
+    # would leak the semaphore (generator's finally never executes)
+    guarded_iterator = SemaphoreGuardedIterator(event_generator(), semaphore)
 
     return StreamingResponse(
-        event_generator(),
+        guarded_iterator,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

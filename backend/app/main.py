@@ -93,11 +93,17 @@ async def health_detailed():
     temp_dir = tempfile.gettempdir()
     try:
         disk_usage = shutil.disk_usage(temp_dir)
+        # Guard against division by zero (possible on some virtual filesystems)
+        used_percent = (
+            round((disk_usage.used / disk_usage.total) * 100, 1)
+            if disk_usage.total > 0
+            else 0.0
+        )
         disk_status = {
             "temp_dir": temp_dir,
             "total_gb": round(disk_usage.total / (1024**3), 2),
             "free_gb": round(disk_usage.free / (1024**3), 2),
-            "used_percent": round((disk_usage.used / disk_usage.total) * 100, 1),
+            "used_percent": used_percent,
         }
     except OSError:
         disk_status = {"error": "Unable to check disk space"}

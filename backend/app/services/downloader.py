@@ -93,6 +93,44 @@ def get_content_type(ext: str) -> str:
     return CONTENT_TYPES.get(ext.lower(), 'application/octet-stream')
 
 
+# Expected final file extensions from yt-dlp downloads
+_EXPECTED_EXTENSIONS = {'.mp4', '.webm', '.mkv', '.mp3', '.m4a', '.opus', '.ogg', '.wav'}
+# Intermediate file extensions that yt-dlp creates during processing
+_SKIP_EXTENSIONS = {'.part', '.temp', '.ytdl', '.frag'}
+
+
+def find_downloaded_file(temp_dir: str) -> Optional[str]:
+    """
+    Find the downloaded file in a temp directory.
+
+    Scans the directory looking for final output files, avoiding intermediate
+    files that yt-dlp creates during processing (like .part, .temp files).
+
+    Args:
+        temp_dir: Path to the temporary directory to scan.
+
+    Returns:
+        Path to the downloaded file, or None if not found.
+    """
+    # First pass: look for files with expected extensions (preferred)
+    for file in os.listdir(temp_dir):
+        file_path = os.path.join(temp_dir, file)
+        if os.path.isfile(file_path):
+            ext = os.path.splitext(file)[1].lower()
+            if ext in _EXPECTED_EXTENSIONS:
+                return file_path
+
+    # Second pass: accept any non-intermediate file
+    for file in os.listdir(temp_dir):
+        file_path = os.path.join(temp_dir, file)
+        if os.path.isfile(file_path):
+            ext = os.path.splitext(file)[1].lower()
+            if ext not in _SKIP_EXTENSIONS:
+                return file_path
+
+    return None
+
+
 # =============================================================================
 # In-memory store for completed downloads
 # =============================================================================
@@ -504,28 +542,7 @@ def download_video(url: str, format_id: str, audio_only: bool = False) -> Downlo
     # Last resort: scan directory for files matching expected extensions
     # This handles edge cases where yt-dlp doesn't populate the info dict correctly
     if not downloaded_file or not os.path.isfile(downloaded_file):
-        expected_extensions = {'.mp4', '.webm', '.mkv', '.mp3', '.m4a', '.opus', '.ogg', '.wav'}
-        # Skip intermediate files that yt-dlp creates during processing
-        skip_extensions = {'.part', '.temp', '.ytdl', '.frag'}
-
-        # First pass: look for files with expected extensions (preferred)
-        for file in os.listdir(temp_dir):
-            file_path = os.path.join(temp_dir, file)
-            if os.path.isfile(file_path):
-                ext = os.path.splitext(file)[1].lower()
-                if ext in expected_extensions:
-                    downloaded_file = file_path
-                    break
-
-        # Second pass: if no expected extension found, accept any non-intermediate file
-        if not downloaded_file:
-            for file in os.listdir(temp_dir):
-                file_path = os.path.join(temp_dir, file)
-                if os.path.isfile(file_path):
-                    ext = os.path.splitext(file)[1].lower()
-                    if ext not in skip_extensions:
-                        downloaded_file = file_path
-                        break
+        downloaded_file = find_downloaded_file(temp_dir)
 
     if not downloaded_file or not os.path.isfile(downloaded_file):
         cleanup_temp_dir(temp_dir)
@@ -682,13 +699,8 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
         yield f"data: {json.dumps({'status': 'error', 'message': download_error['error']})}\n\n"
         return
 
-    # Find downloaded file
-    downloaded_file = None
-    for file in os.listdir(temp_dir):
-        file_path = os.path.join(temp_dir, file)
-        if os.path.isfile(file_path):
-            downloaded_file = file_path
-            break
+    # Find downloaded file using robust logic that skips intermediate files
+    downloaded_file = find_downloaded_file(temp_dir)
 
     if not downloaded_file:
         cleanup_temp_dir(temp_dir)
