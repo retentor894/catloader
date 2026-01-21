@@ -3,6 +3,9 @@
 // - All other cases (Docker, Cloudflare Tunnel, reverse proxy): use relative URL
 const API_URL = window.location.port === '5500' ? 'http://localhost:8000' : '';
 
+// Timeout for video info extraction (ms) - long videos may need more time
+const INFO_FETCH_TIMEOUT = 120000; // 2 minutes
+
 const elements = {
     urlInput: document.getElementById('url-input'),
     searchBtn: document.getElementById('search-btn'),
@@ -247,6 +250,10 @@ async function fetchVideoInfo() {
     setLoading(true);
     elements.videoResult.classList.add('hidden');
 
+    // Create abort controller for timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), INFO_FETCH_TIMEOUT);
+
     try {
         const response = await fetch(`${API_URL}/api/info`, {
             method: 'POST',
@@ -254,7 +261,20 @@ async function fetchVideoInfo() {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ url }),
+            signal: controller.signal,
         });
+
+        clearTimeout(timeoutId);
+
+        // Check if response is JSON before parsing
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+            // Server returned non-JSON (likely HTML error page)
+            if (response.status === 504) {
+                throw new Error('Request timed out. The video may be too long or the server is busy. Please try again.');
+            }
+            throw new Error(`Server error (${response.status}). Please try again later.`);
+        }
 
         const data = await response.json();
 
@@ -265,8 +285,13 @@ async function fetchVideoInfo() {
         currentVideoUrl = url;
         displayVideoInfo(data);
     } catch (error) {
-        showError(error.message || 'Failed to fetch video information. Please check the URL and try again.');
+        if (error.name === 'AbortError') {
+            showError('Request timed out. The video may be too long to process. Please try again.');
+        } else {
+            showError(error.message || 'Failed to fetch video information. Please check the URL and try again.');
+        }
     } finally {
+        clearTimeout(timeoutId);
         setLoading(false);
     }
 }

@@ -23,6 +23,9 @@ from ..exceptions import VideoExtractionError, DownloadError, NetworkError, CatL
 
 logger = logging.getLogger(__name__)
 
+# Timeout for video info extraction (seconds)
+INFO_EXTRACTION_TIMEOUT = 90
+
 # URL validation pattern
 URL_PATTERN = re.compile(
     r'^https?://'
@@ -71,12 +74,21 @@ async def run_in_executor(func, *args, **kwargs):
     return await loop.run_in_executor(_executor, func, *args)
 
 
-@router.post("/info", response_model=VideoInfo, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+@router.post("/info", response_model=VideoInfo, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 504: {"model": ErrorResponse}})
 async def get_info(request: URLRequest):
     """Get video information and available formats."""
     try:
-        info = await run_in_executor(get_video_info, request.url)
+        info = await asyncio.wait_for(
+            run_in_executor(get_video_info, request.url),
+            timeout=INFO_EXTRACTION_TIMEOUT
+        )
         return info
+    except asyncio.TimeoutError:
+        logger.warning(f"Timeout extracting info for {request.url}")
+        raise HTTPException(
+            status_code=504,
+            detail="Video info extraction timed out. The video may be too long or the server is busy. Please try again."
+        )
     except VideoExtractionError as e:
         # Client error - invalid/unsupported URL
         raise HTTPException(status_code=400, detail=str(e))
