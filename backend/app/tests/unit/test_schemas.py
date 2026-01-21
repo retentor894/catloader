@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 from app.models.schemas import URLRequest, VideoInfo, VideoFormat, ErrorResponse
+from app.validation import validate_format_id
 
 
 class TestURLRequest:
@@ -168,3 +169,57 @@ class TestErrorResponse:
         # HTTPException returns {"detail": "..."} so ErrorResponse should match
         error = ErrorResponse(detail="Server timeout")
         assert error.model_dump() == {"detail": "Server timeout"}
+
+
+class TestFormatIdValidation:
+    """Test format_id validation for yt-dlp format strings."""
+
+    def test_valid_simple_format(self):
+        """Should accept simple format IDs."""
+        assert validate_format_id("best") == "best"
+        assert validate_format_id("137") == "137"
+        assert validate_format_id("bestvideo") == "bestvideo"
+        assert validate_format_id("bestaudio") == "bestaudio"
+
+    def test_valid_combined_format(self):
+        """Should accept combined format strings with + and /."""
+        assert validate_format_id("bestvideo+bestaudio") == "bestvideo+bestaudio"
+        assert validate_format_id("137+140") == "137+140"
+        assert validate_format_id("bestaudio/best") == "bestaudio/best"
+
+    def test_valid_format_with_filters(self):
+        """Should accept format strings with filter expressions."""
+        assert validate_format_id("bestvideo[height<=1080]") == "bestvideo[height<=1080]"
+        assert validate_format_id("bestaudio[ext=m4a]") == "bestaudio[ext=m4a]"
+        assert validate_format_id("best[height<=720]/best") == "best[height<=720]/best"
+
+    def test_valid_complex_format(self):
+        """Should accept complex format strings."""
+        fmt = "bestvideo[height<=1080]+bestaudio/best[height<=1080]"
+        assert validate_format_id(fmt) == fmt
+
+    def test_empty_format_returns_best(self):
+        """Should return 'best' for empty format ID."""
+        assert validate_format_id("") == "best"
+        assert validate_format_id(None) == "best"
+
+    def test_whitespace_trimmed(self):
+        """Should trim whitespace from format ID."""
+        assert validate_format_id("  best  ") == "best"
+
+    def test_invalid_chars_rejected(self):
+        """Should reject format IDs with invalid characters."""
+        with pytest.raises(ValueError, match="Invalid format ID"):
+            validate_format_id("best;rm -rf /")
+        with pytest.raises(ValueError, match="Invalid format ID"):
+            validate_format_id("best$(whoami)")
+        with pytest.raises(ValueError, match="Invalid format ID"):
+            validate_format_id("best`id`")
+        with pytest.raises(ValueError, match="Invalid format ID"):
+            validate_format_id("best|cat /etc/passwd")
+
+    def test_too_long_format_rejected(self):
+        """Should reject format IDs exceeding max length."""
+        long_format = "a" * 201
+        with pytest.raises(ValueError, match="too long"):
+            validate_format_id(long_format)

@@ -29,7 +29,7 @@ from ..config import (
     THREAD_POOL_MAX_WORKERS,
     MAX_CONCURRENT_OPERATIONS,
 )
-from ..validation import validate_url as config_validate_url
+from ..validation import validate_url as config_validate_url, validate_format_id
 from ..utils import metrics
 
 logger = logging.getLogger(__name__)
@@ -46,6 +46,19 @@ def validate_url_for_http(url: str) -> str:
     """
     try:
         return config_validate_url(url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+def validate_format_id_for_http(format_id: str) -> str:
+    """
+    Validate format_id and convert ValueError to HTTPException.
+
+    This validates yt-dlp format strings to prevent injection of
+    unexpected characters.
+    """
+    try:
+        return validate_format_id(format_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -80,14 +93,6 @@ _operations_semaphore = asyncio.Semaphore(MAX_CONCURRENT_OPERATIONS)
 def _generate_request_id() -> str:
     """Generate a short request ID for logging correlation."""
     return uuid.uuid4().hex[:8]
-
-
-async def run_in_executor(func, *args, **kwargs):
-    """Run a blocking function in thread pool."""
-    loop = asyncio.get_event_loop()
-    if kwargs:
-        func = partial(func, **kwargs)
-    return await loop.run_in_executor(_executor, func, *args)
 
 
 class ServerAtCapacityError(Exception):
@@ -134,7 +139,7 @@ async def run_with_timeout(
             "Please try again later."
         )
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     if kwargs:
         func = partial(func, **kwargs)
@@ -226,10 +231,11 @@ async def download(
     request_id = _generate_request_id()
     start_time = time.monotonic()
 
-    # FastAPI already decodes query params - don't double-decode
+    # Validate inputs
     validated_url = validate_url_for_http(url)
+    validated_format_id = validate_format_id_for_http(format_id)
 
-    logger.info(f"[{request_id}] Starting download for: {validated_url} (format={format_id}, audio_only={audio_only})")
+    logger.info(f"[{request_id}] Starting download for: {validated_url} (format={validated_format_id}, audio_only={audio_only})")
 
     file_stream = None
     try:
@@ -238,7 +244,7 @@ async def download(
         filename, content_type, file_size, file_stream = await run_with_timeout(
             download_video,
             DOWNLOAD_INIT_TIMEOUT,
-            validated_url, format_id, audio_only
+            validated_url, validated_format_id, audio_only
         )
 
         elapsed = time.monotonic() - start_time
@@ -324,13 +330,14 @@ async def download_progress(
     audio_only: bool = Query(False, description="Download audio only")
 ):
     """Stream download progress via Server-Sent Events."""
-    # FastAPI already decodes query params - don't double-decode
+    # Validate inputs
     validated_url = validate_url_for_http(url)
+    validated_format_id = validate_format_id_for_http(format_id)
 
     def event_generator():
         start_time = time.monotonic()
         try:
-            for event in download_video_with_progress(validated_url, format_id, audio_only):
+            for event in download_video_with_progress(validated_url, validated_format_id, audio_only):
                 # Check if connection has exceeded maximum allowed time
                 elapsed = time.monotonic() - start_time
                 if elapsed > SSE_STREAM_TIMEOUT:

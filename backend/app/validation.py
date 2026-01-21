@@ -1,5 +1,5 @@
 """
-URL validation utilities for CatLoader.
+Input validation utilities for CatLoader.
 
 This module is separate from config.py to follow Single Responsibility Principle:
 - config.py: configuration values only
@@ -60,3 +60,49 @@ def validate_url(url: str) -> str:
         raise ValueError("Invalid URL format. URL must start with http:// or https://")
 
     return url
+
+
+# yt-dlp format ID validation pattern
+# Allows characters commonly used in yt-dlp format strings:
+# - alphanumeric: a-z, A-Z, 0-9
+# - format selectors: +, / (combine formats, fallback)
+# - brackets and comparisons: [, ], <, >, =, !, : (format filtering)
+# - other: -, _, . (format identifiers)
+# Maximum length: 200 chars (reasonable limit for format strings)
+#
+# Examples of valid format strings:
+#   - "best", "bestvideo+bestaudio", "137+140"
+#   - "bestvideo[height<=1080]+bestaudio/best[height<=1080]"
+#   - "bestaudio[ext=m4a]/bestaudio"
+FORMAT_ID_PATTERN = re.compile(r'^[a-zA-Z0-9+/\-_.\[\]<>=!:]+$')
+FORMAT_ID_MAX_LENGTH = 200
+
+
+def validate_format_id(format_id: str) -> str:
+    """
+    Validate yt-dlp format ID string.
+
+    Args:
+        format_id: The format ID to validate
+
+    Returns:
+        The validated format ID
+
+    Raises:
+        ValueError: If format_id is invalid or contains disallowed characters
+    """
+    if not format_id:
+        return "best"  # Default to best if empty
+
+    format_id = format_id.strip()
+
+    if len(format_id) > FORMAT_ID_MAX_LENGTH:
+        raise ValueError(f"Format ID too long (max {FORMAT_ID_MAX_LENGTH} characters)")
+
+    if not FORMAT_ID_PATTERN.match(format_id):
+        raise ValueError(
+            "Invalid format ID. Only alphanumeric characters and "
+            "+/-_.[]<>=!: are allowed"
+        )
+
+    return format_id

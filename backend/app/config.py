@@ -139,3 +139,30 @@ MAX_FILE_SIZE = _get_int_env("CATLOADER_MAX_FILE_SIZE", 2 * 1024 * 1024 * 1024) 
 METRICS_ENABLED = os.environ.get("CATLOADER_METRICS_ENABLED", "true").lower() == "true"
 
 # Note: URL validation has been moved to validation.py (SRP)
+
+# =============================================================================
+# Security Considerations (for production deployment)
+# =============================================================================
+#
+# RATE LIMITING (IMPORTANT):
+# --------------------------
+# The internal semaphore (MAX_CONCURRENT_OPERATIONS) provides basic protection
+# against thread pool exhaustion, but it does NOT protect against DoS attacks.
+#
+# For production deployments, implement rate limiting at the reverse proxy level:
+#
+# Nginx example:
+#   limit_req_zone $binary_remote_addr zone=catloader:10m rate=10r/m;
+#   location /api/ {
+#       limit_req zone=catloader burst=5 nodelay;
+#       proxy_pass http://backend:8000;
+#   }
+#
+# This limits each IP to 10 requests per minute with a burst of 5.
+#
+# DOWNLOAD ID SECURITY:
+# ---------------------
+# Download IDs use cryptographically secure tokens (secrets.token_urlsafe with
+# 256 bits of entropy), making them effectively unguessable. However, the
+# download endpoint should still only be exposed to authenticated users in
+# production environments where security is critical.

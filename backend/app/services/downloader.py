@@ -240,9 +240,15 @@ def get_video_info(url: str) -> VideoInfo:
             raise NetworkError(f"Network error while fetching video info: {e}") from e
         else:
             raise VideoExtractionError(f"Could not extract video information: {e}") from e
+    except (OSError, ConnectionError, TimeoutError) as e:
+        # Known transient errors - wrap as NetworkError for retry
+        logger.warning(f"Transient error extracting video info for {url}: {e}")
+        raise NetworkError(f"Network error: {e}") from e
     except Exception as e:
+        # Unknown errors - log and re-raise without wrapping as transient
+        # This prevents unnecessary retries for programming bugs
         logger.exception(f"Unexpected error extracting video info for {url}")
-        raise NetworkError(f"Unexpected error: {e}") from e
+        raise VideoExtractionError(f"Unexpected error: {e}") from e
 
     if info is None:
         raise VideoExtractionError("Could not extract video information")
@@ -411,10 +417,17 @@ def download_video(url: str, format_id: str, audio_only: bool = False) -> Downlo
         if 'network' in error_msg or 'connection' in error_msg or 'timeout' in error_msg:
             raise NetworkError(f"Network error during download: {e}") from e
         raise DownloadError(f"Download failed: {e}") from e
+    except (OSError, ConnectionError, TimeoutError) as e:
+        # Known transient errors - wrap as NetworkError for retry
+        cleanup_temp_dir(temp_dir)
+        logger.warning(f"Transient error downloading {url}: {e}")
+        raise NetworkError(f"Network error during download: {e}") from e
     except Exception as e:
+        # Unknown errors - log and re-raise without wrapping as transient
+        # This prevents unnecessary retries for programming bugs
         cleanup_temp_dir(temp_dir)
         logger.exception(f"Unexpected error downloading {url}")
-        raise NetworkError(f"Unexpected error during download: {e}") from e
+        raise DownloadError(f"Unexpected error during download: {e}") from e
 
     if info is None:
         cleanup_temp_dir(temp_dir)
