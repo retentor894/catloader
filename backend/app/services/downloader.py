@@ -483,15 +483,46 @@ def download_video(url: str, format_id: str, audio_only: bool = False) -> Downlo
         cleanup_temp_dir(temp_dir)
         raise DownloadError("Could not download video")
 
-    # Find the downloaded file
+    # Get the downloaded file path from yt-dlp's info dict
+    # This is more reliable than scanning the directory because yt-dlp creates
+    # intermediate files during merging (e.g., .part, .temp, separate audio/video)
     downloaded_file = None
-    for file in os.listdir(temp_dir):
-        file_path = os.path.join(temp_dir, file)
-        if os.path.isfile(file_path):
-            downloaded_file = file_path
-            break
 
-    if not downloaded_file:
+    # Primary method: use requested_downloads which contains the final file path
+    if 'requested_downloads' in info and info['requested_downloads']:
+        downloaded_file = info['requested_downloads'][0].get('filepath')
+
+    # Fallback: use _filename if available (older yt-dlp versions)
+    if not downloaded_file and '_filename' in info:
+        downloaded_file = info['_filename']
+
+    # Last resort: scan directory for files matching expected extensions
+    # This handles edge cases where yt-dlp doesn't populate the info dict correctly
+    if not downloaded_file or not os.path.isfile(downloaded_file):
+        expected_extensions = {'.mp4', '.webm', '.mkv', '.mp3', '.m4a', '.opus', '.ogg', '.wav'}
+        # Skip intermediate files that yt-dlp creates during processing
+        skip_extensions = {'.part', '.temp', '.ytdl', '.frag'}
+
+        # First pass: look for files with expected extensions (preferred)
+        for file in os.listdir(temp_dir):
+            file_path = os.path.join(temp_dir, file)
+            if os.path.isfile(file_path):
+                ext = os.path.splitext(file)[1].lower()
+                if ext in expected_extensions:
+                    downloaded_file = file_path
+                    break
+
+        # Second pass: if no expected extension found, accept any non-intermediate file
+        if not downloaded_file:
+            for file in os.listdir(temp_dir):
+                file_path = os.path.join(temp_dir, file)
+                if os.path.isfile(file_path):
+                    ext = os.path.splitext(file)[1].lower()
+                    if ext not in skip_extensions:
+                        downloaded_file = file_path
+                        break
+
+    if not downloaded_file or not os.path.isfile(downloaded_file):
         cleanup_temp_dir(temp_dir)
         raise DownloadError("Download completed but file not found")
 

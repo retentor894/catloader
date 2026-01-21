@@ -7,7 +7,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from urllib.parse import quote
-from typing import TypeVar, Callable, Tuple
+from typing import TypeVar, Callable, Tuple, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -29,7 +29,7 @@ from ..config import (
     MAX_CONCURRENT_OPERATIONS,
     CHUNK_SIZE,
 )
-from ..validation import validate_url as config_validate_url, validate_format_id
+from ..validation import validate_url as config_validate_url, validate_format_id, validate_download_id
 from ..utils import metrics
 
 logger = logging.getLogger(__name__)
@@ -63,6 +63,19 @@ def validate_format_id_for_http(format_id: str) -> str:
         raise HTTPException(status_code=400, detail=str(e))
 
 
+def validate_download_id_for_http(download_id: str) -> str:
+    """
+    Validate download_id and convert ValueError to HTTPException.
+
+    This validates download IDs to ensure they match the expected format
+    (URL-safe base64 from secrets.token_urlsafe).
+    """
+    try:
+        return validate_download_id(download_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 def sanitize_filename(filename: str) -> Tuple[str, str]:
     """
     Sanitize filename for Content-Disposition header (RFC 5987 compliant).
@@ -87,7 +100,19 @@ _executor = ThreadPoolExecutor(max_workers=THREAD_POOL_MAX_WORKERS)
 # Semaphore to limit concurrent yt-dlp operations
 # This prevents thread pool exhaustion when many timeouts occur
 # (orphaned threads from timeouts continue running until yt-dlp's socket_timeout)
-_operations_semaphore = asyncio.Semaphore(MAX_CONCURRENT_OPERATIONS)
+#
+# NOTE: We use lazy initialization to avoid event loop binding issues in Python < 3.10.
+# In Python < 3.10, creating asyncio.Semaphore at module level could bind it to a
+# different event loop than the one FastAPI uses.
+_operations_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    """Get or create the operations semaphore (lazy initialization)."""
+    global _operations_semaphore
+    if _operations_semaphore is None:
+        _operations_semaphore = asyncio.Semaphore(MAX_CONCURRENT_OPERATIONS)
+    return _operations_semaphore
 
 
 # =============================================================================
@@ -162,8 +187,9 @@ async def run_with_timeout(
     """
     # Try to acquire semaphore with minimal wait
     # If server is at capacity, fail fast instead of queueing
+    semaphore = _get_semaphore()
     try:
-        await asyncio.wait_for(_operations_semaphore.acquire(), timeout=0.1)
+        await asyncio.wait_for(semaphore.acquire(), timeout=0.1)
     except asyncio.TimeoutError:
         raise ServerAtCapacityError(
             f"Server at capacity ({MAX_CONCURRENT_OPERATIONS} concurrent operations). "
@@ -192,7 +218,7 @@ async def run_with_timeout(
         )
         raise
     finally:
-        _operations_semaphore.release()
+        semaphore.release()
 
 
 @router.post("/info", response_model=VideoInfo, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 504: {"model": ErrorResponse}})
@@ -360,10 +386,26 @@ async def download_progress(
     format_id: str = Query("best", description="Format ID to download"),
     audio_only: bool = Query(False, description="Download audio only")
 ):
-    """Stream download progress via Server-Sent Events."""
+    """Stream download progress via Server-Sent Events.
+
+    NOTE: This endpoint uses the same concurrency semaphore as other endpoints
+    to prevent DoS attacks via many simultaneous SSE connections.
+    """
     # Validate inputs
     validated_url = validate_url_for_http(url)
     validated_format_id = validate_format_id_for_http(format_id)
+
+    # Acquire semaphore before starting the stream to prevent DoS
+    # This limits how many simultaneous SSE connections can be active
+    semaphore = _get_semaphore()
+    try:
+        await asyncio.wait_for(semaphore.acquire(), timeout=0.1)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Server at capacity ({MAX_CONCURRENT_OPERATIONS} concurrent operations). "
+                   "Please try again later."
+        )
 
     def event_generator():
         start_time = time.monotonic()
@@ -378,7 +420,11 @@ async def download_progress(
                 yield event
         except Exception as e:
             logger.exception(f"Error in download progress stream: {e}")
+            metrics.record_error(operation="download_progress", error=str(e)[:100], elapsed=time.monotonic() - start_time)
             yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
+        finally:
+            # Release semaphore when stream ends (success, error, or client disconnect)
+            semaphore.release()
 
     return StreamingResponse(
         event_generator(),
@@ -394,7 +440,10 @@ async def download_progress(
 @router.get("/download/file/{download_id}")
 async def download_file(download_id: str):
     """Download a completed file by its ID."""
-    file_info = remove_completed_download(download_id)
+    # Validate download_id format to prevent processing malformed IDs
+    validated_id = validate_download_id_for_http(download_id)
+
+    file_info = remove_completed_download(validated_id)
 
     if not file_info:
         raise HTTPException(status_code=404, detail="Download not found or expired")

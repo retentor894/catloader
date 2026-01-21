@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 from app.models.schemas import URLRequest, VideoInfo, VideoFormat, ErrorResponse
-from app.validation import validate_format_id
+from app.validation import validate_format_id, validate_download_id
 
 
 class TestURLRequest:
@@ -223,3 +223,62 @@ class TestFormatIdValidation:
         long_format = "a" * 201
         with pytest.raises(ValueError, match="too long"):
             validate_format_id(long_format)
+
+
+class TestDownloadIdValidation:
+    """Test download_id validation for secure token format."""
+
+    def test_valid_download_id(self):
+        """Should accept valid download IDs (URL-safe base64, ~43 chars)."""
+        # secrets.token_urlsafe(32) generates ~43 character strings
+        valid_id = "abcdefghijklmnopqrstuvwxyz1234567890_-ABCD"
+        assert validate_download_id(valid_id) == valid_id
+
+    def test_valid_download_id_with_underscores_dashes(self):
+        """Should accept IDs with URL-safe characters (-, _)."""
+        valid_id = "abc-def_ghi-jkl_mno-pqr_stu-vwx_yz12-345"  # 41 chars
+        assert validate_download_id(valid_id) == valid_id
+
+    def test_empty_download_id_rejected(self):
+        """Should reject empty download ID."""
+        with pytest.raises(ValueError, match="cannot be empty"):
+            validate_download_id("")
+        with pytest.raises(ValueError, match="cannot be empty"):
+            validate_download_id(None)
+
+    def test_too_short_download_id_rejected(self):
+        """Should reject download IDs that are too short."""
+        short_id = "a" * 39  # Less than minimum (40)
+        with pytest.raises(ValueError, match="Invalid download ID length"):
+            validate_download_id(short_id)
+
+    def test_too_long_download_id_rejected(self):
+        """Should reject download IDs that are too long."""
+        long_id = "a" * 51  # More than maximum (50)
+        with pytest.raises(ValueError, match="Invalid download ID length"):
+            validate_download_id(long_id)
+
+    def test_invalid_chars_rejected(self):
+        """Should reject download IDs with invalid characters."""
+        # 43 chars but with invalid characters
+        with pytest.raises(ValueError, match="Invalid download ID format"):
+            validate_download_id("abcdefghijklmnopqrstuvwxyz1234567890!@#$%")
+        with pytest.raises(ValueError, match="Invalid download ID format"):
+            validate_download_id("abcdefghijklmnopqrstuvwxyz1234567890/../..")
+        with pytest.raises(ValueError, match="Invalid download ID format"):
+            validate_download_id("abcdefghijklmnopqrstuvwxyz123456789 space")
+
+    def test_path_traversal_rejected(self):
+        """Should reject path traversal attempts."""
+        with pytest.raises(ValueError, match="Invalid download ID format"):
+            validate_download_id("../../etc/passwd" + "a" * 28)
+
+    def test_minimum_valid_length(self):
+        """Should accept download IDs at minimum length."""
+        min_id = "a" * 40  # Exactly minimum
+        assert validate_download_id(min_id) == min_id
+
+    def test_maximum_valid_length(self):
+        """Should accept download IDs at maximum length."""
+        max_id = "a" * 50  # Exactly maximum
+        assert validate_download_id(max_id) == max_id

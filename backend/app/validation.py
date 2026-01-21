@@ -62,6 +62,48 @@ def validate_url(url: str) -> str:
     return url
 
 
+# Download ID validation pattern
+# Download IDs are generated using secrets.token_urlsafe(32) which produces
+# a URL-safe base64-encoded string of approximately 43 characters.
+# We validate the format to prevent malformed IDs from being processed.
+DOWNLOAD_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
+DOWNLOAD_ID_MIN_LENGTH = 40
+DOWNLOAD_ID_MAX_LENGTH = 50
+
+
+def validate_download_id(download_id: str) -> str:
+    """
+    Validate download ID format.
+
+    Download IDs are generated using secrets.token_urlsafe(32), producing
+    URL-safe base64 strings. This validation prevents processing of
+    malformed or potentially malicious IDs.
+
+    Args:
+        download_id: The download ID to validate
+
+    Returns:
+        The validated download ID
+
+    Raises:
+        ValueError: If download_id is invalid
+    """
+    if not download_id:
+        raise ValueError("Download ID cannot be empty")
+
+    # Check length
+    if len(download_id) < DOWNLOAD_ID_MIN_LENGTH or len(download_id) > DOWNLOAD_ID_MAX_LENGTH:
+        raise ValueError(
+            f"Invalid download ID length (expected {DOWNLOAD_ID_MIN_LENGTH}-{DOWNLOAD_ID_MAX_LENGTH} characters)"
+        )
+
+    # Check character set (URL-safe base64)
+    if not DOWNLOAD_ID_PATTERN.match(download_id):
+        raise ValueError("Invalid download ID format")
+
+    return download_id
+
+
 # yt-dlp format ID validation pattern
 # Allows characters commonly used in yt-dlp format strings:
 # - alphanumeric: a-z, A-Z, 0-9
