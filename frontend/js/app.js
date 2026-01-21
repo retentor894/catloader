@@ -266,21 +266,21 @@ async function fetchVideoInfo() {
 
         clearTimeout(timeoutId);
 
-        // Check if response is JSON before parsing
-        const contentType = response.headers.get('content-type');
-        if (!contentType || !contentType.includes('application/json')) {
-            // Server returned non-JSON (likely HTML error page)
-            if (response.status === 504) {
-                throw new Error('Request timed out. The video may be too long or the server is busy. Please try again.');
+        // Handle error responses - check Content-Type to detect HTML error pages
+        if (!response.ok) {
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                // Server returned non-JSON (likely HTML error page from nginx)
+                if (response.status === 504) {
+                    throw new Error('Request timed out. The video may be too long or the server is busy. Please try again.');
+                }
+                throw new Error(`Server error (${response.status}). Please try again later.`);
             }
-            throw new Error(`Server error (${response.status}). Please try again later.`);
+            const errorData = await response.json();
+            throw new Error(errorData.detail || 'Failed to fetch video info');
         }
 
         const data = await response.json();
-
-        if (!response.ok) {
-            throw new Error(data.detail || 'Failed to fetch video info');
-        }
 
         currentVideoUrl = url;
         displayVideoInfo(data);
