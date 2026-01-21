@@ -1,6 +1,8 @@
 """
 Centralized configuration for CatLoader backend.
 
+All settings can be overridden via environment variables.
+
 Timeout Configuration
 =====================
 The timeout values are carefully coordinated across the stack:
@@ -16,6 +18,30 @@ Download timeout is longer (300s) because it includes the actual download which
 varies greatly based on video size and network speed.
 """
 
+import os
+
+def _get_int_env(name: str, default: int) -> int:
+    """Get integer from environment variable with default."""
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _get_float_env(name: str, default: float) -> float:
+    """Get float from environment variable with default."""
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 # =============================================================================
 # Timeout Configuration (seconds)
 # =============================================================================
@@ -24,19 +50,22 @@ varies greatly based on video size and network speed.
 # - Used by: /api/info endpoint
 # - Should be less than frontend timeout (95s) to ensure backend error is received
 # - yt-dlp's socket_timeout (30s) limits individual network operations
-INFO_EXTRACTION_TIMEOUT = 90
+# - Env: CATLOADER_INFO_TIMEOUT
+INFO_EXTRACTION_TIMEOUT = _get_int_env("CATLOADER_INFO_TIMEOUT", 90)
 
 # Download initiation timeout
 # - Used by: /api/download endpoint
 # - Covers: URL validation, format selection, download start
 # - Does NOT limit actual file transfer (streaming continues after this)
 # - Longer than info timeout because download preparation is more complex
-DOWNLOAD_INIT_TIMEOUT = 300
+# - Env: CATLOADER_DOWNLOAD_TIMEOUT
+DOWNLOAD_INIT_TIMEOUT = _get_int_env("CATLOADER_DOWNLOAD_TIMEOUT", 300)
 
 # yt-dlp internal socket timeout (configured in downloader.py)
 # - Limits individual HTTP operations within yt-dlp
 # - Helps terminate orphaned threads after asyncio timeout
-YTDLP_SOCKET_TIMEOUT = 30
+# - Env: CATLOADER_YTDLP_SOCKET_TIMEOUT
+YTDLP_SOCKET_TIMEOUT = _get_int_env("CATLOADER_YTDLP_SOCKET_TIMEOUT", 30)
 
 # =============================================================================
 # Thread Pool Configuration
@@ -45,7 +74,34 @@ YTDLP_SOCKET_TIMEOUT = 30
 # Number of workers in the thread pool executor
 # - Higher than typical because orphaned threads from timeouts may accumulate
 # - yt-dlp operations are I/O bound, so more workers is generally fine
-THREAD_POOL_MAX_WORKERS = 8
+# - Env: CATLOADER_THREAD_POOL_WORKERS
+THREAD_POOL_MAX_WORKERS = _get_int_env("CATLOADER_THREAD_POOL_WORKERS", 8)
+
+# =============================================================================
+# Retry Configuration
+# =============================================================================
+
+# Maximum number of retry attempts for transient errors (network issues, rate limits)
+# - Env: CATLOADER_MAX_RETRIES
+MAX_RETRIES = _get_int_env("CATLOADER_MAX_RETRIES", 3)
+
+# Base delay for exponential backoff (seconds)
+# - Actual delay: base_delay * (2 ^ attempt), e.g., 1s, 2s, 4s
+# - Env: CATLOADER_RETRY_BASE_DELAY
+RETRY_BASE_DELAY = _get_float_env("CATLOADER_RETRY_BASE_DELAY", 1.0)
+
+# Maximum delay between retries (seconds)
+# - Caps the exponential backoff to prevent excessive waits
+# - Env: CATLOADER_RETRY_MAX_DELAY
+RETRY_MAX_DELAY = _get_float_env("CATLOADER_RETRY_MAX_DELAY", 10.0)
+
+# =============================================================================
+# Metrics Configuration
+# =============================================================================
+
+# Enable metrics collection (logs timeout/retry statistics)
+# - Env: CATLOADER_METRICS_ENABLED
+METRICS_ENABLED = os.environ.get("CATLOADER_METRICS_ENABLED", "true").lower() == "true"
 
 # =============================================================================
 # URL Validation Pattern

@@ -28,6 +28,8 @@ from ..config import (
     THREAD_POOL_MAX_WORKERS,
     validate_url as config_validate_url,
 )
+from ..utils import metrics, with_retry_async, RETRYABLE_EXCEPTIONS
+from ..config import MAX_RETRIES
 
 logger = logging.getLogger(__name__)
 
@@ -136,17 +138,27 @@ async def get_info(request: URLRequest):
 
     logger.info(f"[{request_id}] Starting info extraction for: {request.url}")
 
-    try:
-        info = await run_with_timeout(
+    async def fetch_with_timeout():
+        return await run_with_timeout(
             get_video_info,
             INFO_EXTRACTION_TIMEOUT,
             request.url
+        )
+
+    try:
+        # Retry on transient network errors
+        info = await with_retry_async(
+            fetch_with_timeout,
+            max_retries=MAX_RETRIES,
+            retryable_exceptions=(NetworkError,),
+            operation_name=f"info_extraction[{request_id}]"
         )
         elapsed = time.monotonic() - start_time
         logger.info(f"[{request_id}] Info extraction completed in {elapsed:.2f}s")
         return info
     except asyncio.TimeoutError:
         elapsed = time.monotonic() - start_time
+        metrics.record_timeout(endpoint="/api/info", elapsed=elapsed)
         logger.warning(
             f"[{request_id}] Timeout after {elapsed:.2f}s (limit: {INFO_EXTRACTION_TIMEOUT}s) "
             f"extracting info for {request.url}. "
@@ -158,18 +170,22 @@ async def get_info(request: URLRequest):
         )
     except VideoExtractionError as e:
         elapsed = time.monotonic() - start_time
+        metrics.record_error(operation="info_extraction", error=str(e)[:100], elapsed=elapsed)
         logger.warning(f"[{request_id}] Extraction error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except NetworkError as e:
         elapsed = time.monotonic() - start_time
+        metrics.record_error(operation="info_extraction", error=str(e)[:100], elapsed=elapsed)
         logger.warning(f"[{request_id}] Network error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=503, detail=str(e))
     except CatLoaderError as e:
         elapsed = time.monotonic() - start_time
+        metrics.record_error(operation="info_extraction", error=str(e)[:100], elapsed=elapsed)
         logger.warning(f"[{request_id}] Application error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         elapsed = time.monotonic() - start_time
+        metrics.record_error(operation="info_extraction", error=str(e)[:100], elapsed=elapsed)
         logger.exception(f"[{request_id}] Unexpected error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
@@ -189,11 +205,20 @@ async def download(
 
     logger.info(f"[{request_id}] Starting download for: {validated_url} (format={format_id}, audio_only={audio_only})")
 
-    try:
-        filename, content_type, file_size, file_stream = await run_with_timeout(
+    async def download_with_timeout():
+        return await run_with_timeout(
             download_video,
             DOWNLOAD_INIT_TIMEOUT,
             validated_url, format_id, audio_only
+        )
+
+    try:
+        # Retry on transient network errors
+        filename, content_type, file_size, file_stream = await with_retry_async(
+            download_with_timeout,
+            max_retries=MAX_RETRIES,
+            retryable_exceptions=(NetworkError,),
+            operation_name=f"download[{request_id}]"
         )
 
         elapsed = time.monotonic() - start_time
@@ -216,6 +241,7 @@ async def download(
         )
     except asyncio.TimeoutError:
         elapsed = time.monotonic() - start_time
+        metrics.record_timeout(endpoint="/api/download", elapsed=elapsed)
         logger.warning(
             f"[{request_id}] Timeout after {elapsed:.2f}s (limit: {DOWNLOAD_INIT_TIMEOUT}s) "
             f"downloading {validated_url}. "
@@ -227,18 +253,22 @@ async def download(
         )
     except DownloadError as e:
         elapsed = time.monotonic() - start_time
+        metrics.record_error(operation="download", error=str(e)[:100], elapsed=elapsed)
         logger.warning(f"[{request_id}] Download error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except NetworkError as e:
         elapsed = time.monotonic() - start_time
+        metrics.record_error(operation="download", error=str(e)[:100], elapsed=elapsed)
         logger.warning(f"[{request_id}] Network error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=503, detail=str(e))
     except CatLoaderError as e:
         elapsed = time.monotonic() - start_time
+        metrics.record_error(operation="download", error=str(e)[:100], elapsed=elapsed)
         logger.warning(f"[{request_id}] Application error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         elapsed = time.monotonic() - start_time
+        metrics.record_error(operation="download", error=str(e)[:100], elapsed=elapsed)
         logger.exception(f"[{request_id}] Unexpected error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
