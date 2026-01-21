@@ -213,6 +213,22 @@ METRICS_ENABLED = os.environ.get("CATLOADER_METRICS_ENABLED", "true").lower() ==
 # download endpoint should still only be exposed to authenticated users in
 # production environments where security is critical.
 #
+# HEALTH ENDPOINT SECURITY:
+# -------------------------
+# The /health/detailed endpoint exposes operational information that could
+# help attackers (thread pool stats, disk usage, yt-dlp version, error counts).
+#
+# Restrict access to internal networks in production:
+#   location /health/detailed {
+#       allow 10.0.0.0/8;
+#       allow 172.16.0.0/12;
+#       allow 192.168.0.0/16;
+#       deny all;
+#       proxy_pass http://backend:8000;
+#   }
+#
+# The basic /health endpoint is safe for public access (load balancer checks).
+#
 # CIRCUIT BREAKER (future enhancement):
 # -------------------------------------
 # For high-availability deployments, consider implementing a circuit breaker

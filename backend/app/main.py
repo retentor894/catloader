@@ -85,6 +85,23 @@ async def health_detailed():
 
     Includes thread pool status, disk space, and metrics.
     Use for debugging and monitoring dashboards.
+
+    SECURITY WARNING: This endpoint exposes operational details (thread pool
+    stats, disk usage, yt-dlp version, error counts) that could aid attackers
+    in timing attacks or identifying vulnerabilities. In production deployments:
+
+    1. Restrict access to internal networks only via reverse proxy:
+       location /health/detailed {
+           allow 10.0.0.0/8;
+           allow 172.16.0.0/12;
+           allow 192.168.0.0/16;
+           deny all;
+           proxy_pass http://backend:8000;
+       }
+
+    2. Or require authentication for this endpoint.
+
+    The basic /health endpoint is safe for public access (load balancer checks).
     """
     # Thread pool status (using public API to avoid coupling)
     thread_pool_status = download.get_executor_stats()

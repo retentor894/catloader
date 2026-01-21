@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -23,12 +24,16 @@ class SemaphoreGuardedIterator:
     generator starts iterating, the generator's finally block never executes.
     This wrapper ensures release() is called when close() is invoked by
     Starlette, even if iteration never started.
+
+    Thread-safety: Uses a lock to prevent double-release if close() is called
+    from a different thread than __next__() (possible with Starlette's streaming).
     """
 
     def __init__(self, generator, semaphore: asyncio.Semaphore):
         self._generator = generator
         self._semaphore = semaphore
         self._released = False
+        self._lock = threading.Lock()
 
     def __iter__(self):
         return self
@@ -47,9 +52,11 @@ class SemaphoreGuardedIterator:
             self._generator.close()
 
     def _release(self):
-        if not self._released:
-            self._released = True
-            self._semaphore.release()
+        """Thread-safe semaphore release (prevents double-release)."""
+        with self._lock:
+            if not self._released:
+                self._released = True
+                self._semaphore.release()
 
 
 from ..services.downloader import (
@@ -203,13 +210,22 @@ _executor = ThreadPoolExecutor(max_workers=THREAD_POOL_MAX_WORKERS)
 # In Python < 3.10, creating asyncio.Semaphore at module level could bind it to a
 # different event loop than the one FastAPI uses.
 _operations_semaphore: Optional[asyncio.Semaphore] = None
+_semaphore_lock = threading.Lock()
 
 
 def _get_semaphore() -> asyncio.Semaphore:
-    """Get or create the operations semaphore (lazy initialization)."""
+    """
+    Get or create the operations semaphore (thread-safe lazy initialization).
+
+    Uses double-checked locking pattern for efficiency: the lock is only
+    acquired when the semaphore hasn't been created yet.
+    """
     global _operations_semaphore
     if _operations_semaphore is None:
-        _operations_semaphore = asyncio.Semaphore(MAX_CONCURRENT_OPERATIONS)
+        with _semaphore_lock:
+            # Double-check after acquiring lock (another thread may have created it)
+            if _operations_semaphore is None:
+                _operations_semaphore = asyncio.Semaphore(MAX_CONCURRENT_OPERATIONS)
     return _operations_semaphore
 
 
