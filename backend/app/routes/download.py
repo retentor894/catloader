@@ -4,7 +4,7 @@ import logging
 import os
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from urllib.parse import quote
 from typing import TypeVar, Callable
@@ -28,8 +28,7 @@ from ..config import (
     THREAD_POOL_MAX_WORKERS,
     validate_url as config_validate_url,
 )
-from ..utils import metrics, with_retry_async, RETRYABLE_EXCEPTIONS
-from ..config import MAX_RETRIES
+from ..utils import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -109,24 +108,21 @@ async def run_with_timeout(
     if kwargs:
         func = partial(func, **kwargs)
 
-    # Submit to executor and get Future
-    future: Future = _executor.submit(func, *args)
-
     try:
-        # Wait with timeout using asyncio
+        # Run directly in our executor with timeout
+        # Using a single executor avoids the race condition of having
+        # future.result() block in a separate thread pool
         return await asyncio.wait_for(
-            loop.run_in_executor(None, future.result),
+            loop.run_in_executor(_executor, func, *args),
             timeout=timeout
         )
     except asyncio.TimeoutError:
-        # Cancel the future (won't stop running thread, but marks it as cancelled)
-        # The thread will continue until yt-dlp's socket_timeout kicks in
-        cancelled = future.cancel()
-        if not cancelled:
-            logger.warning(
-                f"Timeout after {timeout}s - thread will continue until yt-dlp's "
-                f"internal timeout (orphaned thread)"
-            )
+        # The thread continues running until yt-dlp's socket_timeout kicks in
+        # We can't cancel it, but it will eventually terminate
+        logger.warning(
+            f"Timeout after {timeout}s - thread will continue until yt-dlp's "
+            f"internal timeout (orphaned thread)"
+        )
         raise
 
 
@@ -138,20 +134,13 @@ async def get_info(request: URLRequest):
 
     logger.info(f"[{request_id}] Starting info extraction for: {request.url}")
 
-    async def fetch_with_timeout():
-        return await run_with_timeout(
+    try:
+        # Note: No retry at endpoint level to avoid multiplying timeout
+        # yt-dlp has internal retry logic (retries=3 in COMMON_OPTS)
+        info = await run_with_timeout(
             get_video_info,
             INFO_EXTRACTION_TIMEOUT,
             request.url
-        )
-
-    try:
-        # Retry on transient network errors
-        info = await with_retry_async(
-            fetch_with_timeout,
-            max_retries=MAX_RETRIES,
-            retryable_exceptions=(NetworkError,),
-            operation_name=f"info_extraction[{request_id}]"
         )
         elapsed = time.monotonic() - start_time
         logger.info(f"[{request_id}] Info extraction completed in {elapsed:.2f}s")
@@ -205,20 +194,14 @@ async def download(
 
     logger.info(f"[{request_id}] Starting download for: {validated_url} (format={format_id}, audio_only={audio_only})")
 
-    async def download_with_timeout():
-        return await run_with_timeout(
+    file_stream = None
+    try:
+        # Note: No retry at endpoint level to avoid multiplying timeout
+        # yt-dlp has internal retry logic (retries=3 in COMMON_OPTS)
+        filename, content_type, file_size, file_stream = await run_with_timeout(
             download_video,
             DOWNLOAD_INIT_TIMEOUT,
             validated_url, format_id, audio_only
-        )
-
-    try:
-        # Retry on transient network errors
-        filename, content_type, file_size, file_stream = await with_retry_async(
-            download_with_timeout,
-            max_retries=MAX_RETRIES,
-            retryable_exceptions=(NetworkError,),
-            operation_name=f"download[{request_id}]"
         )
 
         elapsed = time.monotonic() - start_time
@@ -230,8 +213,13 @@ async def download(
             ascii_filename = "download" + (".mp3" if audio_only else ".mp4")
             encoded_filename = ascii_filename
 
+        # Transfer ownership of file_stream to StreamingResponse
+        # Set to None so we don't close it in the except block
+        response_stream = file_stream
+        file_stream = None
+
         return StreamingResponse(
-            file_stream,
+            response_stream,
             media_type=content_type,
             headers={
                 "Content-Disposition": f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{encoded_filename}',
@@ -271,6 +259,15 @@ async def download(
         metrics.record_error(operation="download", error=str(e)[:100], elapsed=elapsed)
         logger.exception(f"[{request_id}] Unexpected error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    finally:
+        # If file_stream was not transferred to StreamingResponse, consume it to trigger cleanup
+        if file_stream is not None:
+            try:
+                # Consuming the generator triggers its finally block which cleans up temp files
+                for _ in file_stream:
+                    pass
+            except Exception:
+                pass  # Best effort cleanup
 
 
 @router.get("/download/progress")

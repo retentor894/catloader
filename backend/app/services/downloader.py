@@ -67,6 +67,8 @@ def _background_cleanup() -> None:
 
 def _cleanup_expired_downloads() -> None:
     """Clean up expired downloads from the store."""
+    # Collect dirs to clean while holding lock, then clean without lock
+    dirs_to_clean = []
     with _downloads_lock:
         current_time = time.time()
         expired = [k for k, v in _completed_downloads.items()
@@ -74,9 +76,14 @@ def _cleanup_expired_downloads() -> None:
         for k in expired:
             info = _completed_downloads.pop(k, None)
             if info and 'temp_dir' in info:
-                cleanup_temp_dir(info['temp_dir'])
-        if expired:
-            logger.info(f"Cleaned up {len(expired)} expired downloads")
+                dirs_to_clean.append(info['temp_dir'])
+
+    # Do I/O cleanup outside of lock to avoid blocking other threads
+    for temp_dir in dirs_to_clean:
+        cleanup_temp_dir(temp_dir)
+
+    if dirs_to_clean:
+        logger.info(f"Cleaned up {len(dirs_to_clean)} expired downloads")
 
 
 def _start_cleanup_thread() -> None:
@@ -110,9 +117,12 @@ def store_completed_download(file_info: Dict[str, Any]) -> str:
     stored_info = file_info.copy()
     stored_info['created_at'] = time.time()
 
+    # Collect dirs to clean while holding lock
+    dirs_to_clean = []
+
     with _downloads_lock:
-        # Clean expired downloads
-        _cleanup_expired_downloads_locked()
+        # Clean expired downloads (collect dirs only, don't do I/O)
+        dirs_to_clean.extend(_collect_expired_downloads_locked())
 
         # Check capacity and remove oldest if needed
         if len(_completed_downloads) >= MAX_CONCURRENT_DOWNLOADS:
@@ -122,23 +132,32 @@ def store_completed_download(file_info: Dict[str, Any]) -> str:
             )
             old_info = _completed_downloads.pop(oldest_key)
             if old_info and 'temp_dir' in old_info:
-                cleanup_temp_dir(old_info['temp_dir'])
-            logger.warning(f"Evicted oldest download due to capacity limit")
+                dirs_to_clean.append(old_info['temp_dir'])
+            logger.warning("Evicted oldest download due to capacity limit")
 
         _completed_downloads[download_id] = stored_info
+
+    # Do I/O cleanup outside of lock
+    for temp_dir in dirs_to_clean:
+        cleanup_temp_dir(temp_dir)
 
     return download_id
 
 
-def _cleanup_expired_downloads_locked() -> None:
-    """Clean expired downloads (must be called with lock held)."""
+def _collect_expired_downloads_locked() -> list:
+    """Collect and remove expired downloads (must be called with lock held).
+
+    Returns list of temp_dir paths to clean up AFTER releasing lock.
+    """
+    dirs_to_clean = []
     current_time = time.time()
     expired = [k for k, v in _completed_downloads.items()
                if current_time - v.get('created_at', 0) > DOWNLOAD_EXPIRY_SECONDS]
     for k in expired:
         info = _completed_downloads.pop(k, None)
         if info and 'temp_dir' in info:
-            cleanup_temp_dir(info['temp_dir'])
+            dirs_to_clean.append(info['temp_dir'])
+    return dirs_to_clean
 
 
 def remove_completed_download(download_id: str) -> Optional[Dict[str, Any]]:
