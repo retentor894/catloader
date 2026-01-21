@@ -9,11 +9,19 @@ import threading
 import secrets
 import time
 import atexit
-from typing import Generator, Tuple, Dict, Any, Optional
+from typing import Generator, Tuple, Dict, Any, Optional, NamedTuple
 from ..models.schemas import VideoInfo, VideoFormat
 from ..exceptions import VideoExtractionError, DownloadError, NetworkError
 
 logger = logging.getLogger(__name__)
+
+
+class DownloadResult(NamedTuple):
+    """Result of a video/audio download operation."""
+    filename: str
+    content_type: str
+    file_size: int
+    stream: Generator[bytes, None, None]
 
 # =============================================================================
 # Constants
@@ -300,12 +308,12 @@ def cleanup_temp_dir(temp_dir: str) -> None:
         logger.warning(f"Failed to cleanup temp directory {temp_dir}: {e}")
 
 
-def download_video(url: str, format_id: str, audio_only: bool = False) -> Tuple[str, str, int, Generator[bytes, None, None]]:
+def download_video(url: str, format_id: str, audio_only: bool = False) -> DownloadResult:
     """
-    Download video/audio and return filename, content_type, file_size, and file stream.
+    Download video/audio and return a DownloadResult with file info and stream.
 
     Returns:
-        Tuple of (filename, content_type, file_size, generator)
+        DownloadResult with filename, content_type, file_size, and stream generator
 
     Raises:
         DownloadError: If download fails
@@ -382,7 +390,12 @@ def download_video(url: str, format_id: str, audio_only: bool = False) -> Tuple[
         finally:
             cleanup_temp_dir(temp_dir)
 
-    return filename, content_type, file_size, file_generator()
+    return DownloadResult(
+        filename=filename,
+        content_type=content_type,
+        file_size=file_size,
+        stream=file_generator()
+    )
 
 
 def download_video_with_progress(url: str, format_id: str, audio_only: bool = False) -> Generator[str, None, None]:

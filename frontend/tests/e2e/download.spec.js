@@ -21,7 +21,6 @@ test.describe('Video/Audio Downloads', () => {
 
   test('should trigger download on video button click', async ({ page }) => {
     let progressUrl = '';
-    let fileDownloadTriggered = false;
 
     // Mock SSE progress endpoint
     await page.route('**/api/download/progress*', async (route) => {
@@ -39,7 +38,6 @@ test.describe('Video/Audio Downloads', () => {
 
     // Mock file download endpoint
     await page.route('**/api/download/file/*', async (route) => {
-      fileDownloadTriggered = true;
       await route.fulfill({
         status: 200,
         headers: {
@@ -50,8 +48,12 @@ test.describe('Video/Audio Downloads', () => {
       });
     });
 
+    // Click and wait for progress request to complete
+    const progressResponsePromise = page.waitForResponse(resp =>
+      resp.url().includes('/api/download/progress') && resp.status() === 200
+    );
     await page.locator('#video-formats .format-btn').first().click();
-    await page.waitForTimeout(1000);
+    await progressResponsePromise;
 
     expect(progressUrl).toContain('format_id=');
     expect(progressUrl).toContain('audio_only=false');
@@ -81,8 +83,12 @@ test.describe('Video/Audio Downloads', () => {
       });
     });
 
+    // Click and wait for progress request to complete
+    const progressResponsePromise = page.waitForResponse(resp =>
+      resp.url().includes('/api/download/progress') && resp.status() === 200
+    );
     await page.locator('#audio-formats .format-btn').first().click();
-    await page.waitForTimeout(1000);
+    await progressResponsePromise;
 
     expect(progressUrl).toContain('format_id=140');
     expect(progressUrl).toContain('audio_only=true');
@@ -104,8 +110,12 @@ test.describe('Video/Audio Downloads', () => {
       await route.fulfill({ status: 200, body: Buffer.from('data') });
     });
 
+    // Click and wait for progress request to complete
+    const progressResponsePromise = page.waitForResponse(resp =>
+      resp.url().includes('/api/download/progress') && resp.status() === 200
+    );
     await page.locator('#video-formats .format-btn').first().click();
-    await page.waitForTimeout(500);
+    await progressResponsePromise;
 
     // URL should be properly encoded in the progress request
     expect(progressUrl).toContain('url=https%3A%2F%2Fwww.youtube.com');

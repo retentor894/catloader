@@ -350,7 +350,7 @@ class TestTimeoutBehavior:
         assert response.status_code == status.HTTP_504_GATEWAY_TIMEOUT
         data = response.json()
         assert "detail" in data
-        assert "timed out" in data["detail"].lower()
+        assert "timeout" in data["detail"].lower()
 
     @patch('app.routes.download.run_with_timeout')
     def test_download_timeout_returns_504(self, mock_run_with_timeout, client):
@@ -366,7 +366,7 @@ class TestTimeoutBehavior:
         assert response.status_code == status.HTTP_504_GATEWAY_TIMEOUT
         data = response.json()
         assert "detail" in data
-        assert "timed out" in data["detail"].lower()
+        assert "timeout" in data["detail"].lower()
 
     @patch('app.routes.download.run_with_timeout')
     def test_info_timeout_error_message(self, mock_run_with_timeout, client):

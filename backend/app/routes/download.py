@@ -154,7 +154,7 @@ async def get_info(request: URLRequest):
         )
         raise HTTPException(
             status_code=504,
-            detail="Video info extraction timed out. The video may be too long or the server is busy. Please try again."
+            detail="Server timeout. The video may be too long or the server is busy. Please try again."
         )
     except VideoExtractionError as e:
         elapsed = time.monotonic() - start_time
@@ -223,7 +223,7 @@ async def download(
         )
         raise HTTPException(
             status_code=504,
-            detail="Download timed out. The video may be too large or the server is busy. Please try again."
+            detail="Server timeout. The video may be too long or the server is busy. Please try again."
         )
     except DownloadError as e:
         elapsed = time.monotonic() - start_time

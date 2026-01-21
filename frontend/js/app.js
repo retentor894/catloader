@@ -8,6 +8,15 @@ const API_URL = window.location.port === '5500' ? 'http://localhost:8000' : '';
 // Backend timeout: 90s, Frontend timeout: 95s (5s buffer for network latency)
 const INFO_FETCH_TIMEOUT = 95000;
 
+// Unified error messages - keep in sync with backend and nginx
+const ERROR_MESSAGES = {
+    502: 'Backend service unavailable. Please try again later.',
+    503: 'Server is temporarily overloaded. Please try again later.',
+    504: 'Server timeout. The video may be too long or the server is busy. Please try again.',
+    timeout: 'Request timed out. The video may be too long or the server is busy. Please try again.',
+    default: 'An error occurred. Please try again later.',
+};
+
 const elements = {
     urlInput: document.getElementById('url-input'),
     searchBtn: document.getElementById('search-btn'),
@@ -271,10 +280,9 @@ async function fetchVideoInfo() {
             const contentType = response.headers.get('content-type');
             if (!contentType || !contentType.includes('application/json')) {
                 // Server returned non-JSON (likely HTML error page from nginx)
-                if (response.status === 504) {
-                    throw new Error('Request timed out. The video may be too long or the server is busy. Please try again.');
-                }
-                throw new Error(`Server error (${response.status}). Please try again later.`);
+                // Use unified error messages for known status codes
+                const errorMessage = ERROR_MESSAGES[response.status] || ERROR_MESSAGES.default;
+                throw new Error(errorMessage);
             }
             const errorData = await response.json();
             throw new Error(errorData.detail || 'Failed to fetch video info');
@@ -286,7 +294,7 @@ async function fetchVideoInfo() {
         displayVideoInfo(data);
     } catch (error) {
         if (error.name === 'AbortError') {
-            showError('Request timed out. The video may be too long to process. Please try again.');
+            showError(ERROR_MESSAGES.timeout);
         } else {
             showError(error.message || 'Failed to fetch video information. Please check the URL and try again.');
         }
