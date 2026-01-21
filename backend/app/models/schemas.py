@@ -41,5 +41,5 @@ class DownloadRequest(BaseModel):
 
 
 class ErrorResponse(BaseModel):
-    error: str
-    detail: Optional[str] = None
+    """Error response schema matching FastAPI's HTTPException format."""
+    detail: str

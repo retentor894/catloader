@@ -4,6 +4,7 @@ Utility functions for retry logic and metrics collection.
 
 import asyncio
 import logging
+import threading
 import time
 from functools import wraps
 from typing import TypeVar, Callable, Type, Tuple
@@ -20,9 +21,10 @@ T = TypeVar('T')
 # =============================================================================
 
 class Metrics:
-    """Simple metrics collector for observability."""
+    """Thread-safe metrics collector for observability."""
 
     def __init__(self):
+        self._lock = threading.Lock()
         self._timeout_count = 0
         self._retry_count = 0
         self._success_count = 0
@@ -30,48 +32,57 @@ class Metrics:
 
     def record_timeout(self, endpoint: str, elapsed: float):
         """Record a timeout event."""
-        self._timeout_count += 1
+        with self._lock:
+            self._timeout_count += 1
+            count = self._timeout_count
         if METRICS_ENABLED:
             logger.info(
                 f"METRIC timeout endpoint={endpoint} elapsed={elapsed:.2f}s "
-                f"total_timeouts={self._timeout_count}"
+                f"total_timeouts={count}"
             )
 
     def record_retry(self, operation: str, attempt: int, delay: float, error: str):
         """Record a retry attempt."""
-        self._retry_count += 1
+        with self._lock:
+            self._retry_count += 1
+            count = self._retry_count
         if METRICS_ENABLED:
             logger.info(
                 f"METRIC retry operation={operation} attempt={attempt} "
-                f"delay={delay:.2f}s error={error} total_retries={self._retry_count}"
+                f"delay={delay:.2f}s error={error} total_retries={count}"
             )
 
     def record_success(self, operation: str, elapsed: float):
         """Record a successful operation."""
-        self._success_count += 1
+        with self._lock:
+            self._success_count += 1
+            count = self._success_count
         if METRICS_ENABLED:
             logger.debug(
                 f"METRIC success operation={operation} elapsed={elapsed:.2f}s "
-                f"total_success={self._success_count}"
+                f"total_success={count}"
             )
 
     def record_error(self, operation: str, error: str, elapsed: float):
         """Record an error."""
-        self._error_count += 1
+        with self._lock:
+            self._error_count += 1
+            count = self._error_count
         if METRICS_ENABLED:
             logger.info(
                 f"METRIC error operation={operation} error={error} "
-                f"elapsed={elapsed:.2f}s total_errors={self._error_count}"
+                f"elapsed={elapsed:.2f}s total_errors={count}"
             )
 
     def get_stats(self) -> dict:
         """Get current metrics statistics."""
-        return {
-            "timeouts": self._timeout_count,
-            "retries": self._retry_count,
-            "successes": self._success_count,
-            "errors": self._error_count,
-        }
+        with self._lock:
+            return {
+                "timeouts": self._timeout_count,
+                "retries": self._retry_count,
+                "successes": self._success_count,
+                "errors": self._error_count,
+            }
 
 
 # Global metrics instance
@@ -112,6 +123,10 @@ def with_retry(
     """
     Decorator that adds retry logic with exponential backoff.
 
+    WARNING: This decorator is for SYNCHRONOUS functions only. It uses time.sleep()
+    which will block the event loop if used with async code. For async functions,
+    use with_retry_async() instead.
+
     Args:
         max_retries: Maximum number of retry attempts
         retryable_exceptions: Tuple of exception types that should trigger retry
@@ -119,7 +134,7 @@ def with_retry(
 
     Usage:
         @with_retry(max_retries=3, operation_name="video_info")
-        def get_video_info(url):
+        def get_video_info(url):  # sync function only!
             ...
     """
     def decorator(func: Callable[..., T]) -> Callable[..., T]:

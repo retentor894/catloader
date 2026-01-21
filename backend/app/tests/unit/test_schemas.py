@@ -56,6 +56,16 @@ class TestURLRequest:
         request = URLRequest(url="http://192.168.1.1:3000/video")
         assert request.url == "http://192.168.1.1:3000/video"
 
+    def test_ipv6_address_url_accepted(self):
+        """Should accept IPv6 address URLs in brackets."""
+        request = URLRequest(url="http://[::1]:8000/video")
+        assert request.url == "http://[::1]:8000/video"
+
+    def test_ipv6_full_address_url_accepted(self):
+        """Should accept full IPv6 address URLs."""
+        request = URLRequest(url="https://[2001:db8::1]/path")
+        assert request.url == "https://[2001:db8::1]/path"
+
     def test_url_trimmed(self):
         """Should trim whitespace from URL."""
         request = URLRequest(url="  https://youtube.com/watch  ")
@@ -146,16 +156,15 @@ class TestVideoInfo:
 
 
 class TestErrorResponse:
-    """Test ErrorResponse schema."""
+    """Test ErrorResponse schema matching FastAPI HTTPException format."""
 
-    def test_error_with_detail(self):
-        """Should create error with detail."""
-        error = ErrorResponse(error="Not found", detail="Video not available")
-        assert error.error == "Not found"
+    def test_error_response_creation(self):
+        """Should create error response with detail."""
+        error = ErrorResponse(detail="Video not available")
         assert error.detail == "Video not available"
 
-    def test_error_without_detail(self):
-        """Should create error without detail."""
-        error = ErrorResponse(error="Server error")
-        assert error.error == "Server error"
-        assert error.detail is None
+    def test_error_response_matches_http_exception(self):
+        """Should match FastAPI's HTTPException format."""
+        # HTTPException returns {"detail": "..."} so ErrorResponse should match
+        error = ErrorResponse(detail="Server timeout")
+        assert error.model_dump() == {"detail": "Server timeout"}

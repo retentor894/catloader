@@ -7,7 +7,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from urllib.parse import quote
-from typing import TypeVar, Callable
+from typing import TypeVar, Callable, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -25,6 +25,7 @@ from ..exceptions import VideoExtractionError, DownloadError, NetworkError, CatL
 from ..config import (
     INFO_EXTRACTION_TIMEOUT,
     DOWNLOAD_INIT_TIMEOUT,
+    SSE_STREAM_TIMEOUT,
     THREAD_POOL_MAX_WORKERS,
     validate_url as config_validate_url,
 )
@@ -48,8 +49,13 @@ def validate_url_for_http(url: str) -> str:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-def sanitize_filename(filename: str) -> str:
-    """Sanitize filename for Content-Disposition header (RFC 5987 compliant)."""
+def sanitize_filename(filename: str) -> Tuple[str, str]:
+    """
+    Sanitize filename for Content-Disposition header (RFC 5987 compliant).
+
+    Returns:
+        Tuple of (ascii_filename, encoded_filename) for use in Content-Disposition header.
+    """
     # Remove problematic characters
     safe_filename = filename.replace('"', "'").replace('\n', '').replace('\r', '')
     # Encode for ASCII fallback
@@ -281,8 +287,16 @@ async def download_progress(
     validated_url = validate_url_for_http(url)
 
     def event_generator():
+        start_time = time.monotonic()
         try:
-            yield from download_video_with_progress(validated_url, format_id, audio_only)
+            for event in download_video_with_progress(validated_url, format_id, audio_only):
+                # Check if connection has exceeded maximum allowed time
+                elapsed = time.monotonic() - start_time
+                if elapsed > SSE_STREAM_TIMEOUT:
+                    logger.warning(f"SSE stream timeout after {elapsed:.0f}s for {validated_url}")
+                    yield f"data: {json.dumps({'status': 'error', 'message': 'Connection timeout'})}\n\n"
+                    return
+                yield event
         except Exception as e:
             logger.exception(f"Error in download progress stream: {e}")
             yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"

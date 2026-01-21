@@ -61,6 +61,13 @@ INFO_EXTRACTION_TIMEOUT = _get_int_env("CATLOADER_INFO_TIMEOUT", 90)
 # - Env: CATLOADER_DOWNLOAD_TIMEOUT
 DOWNLOAD_INIT_TIMEOUT = _get_int_env("CATLOADER_DOWNLOAD_TIMEOUT", 300)
 
+# SSE progress stream timeout
+# - Used by: /api/download/progress endpoint
+# - Maximum time an SSE connection can stay open
+# - Prevents indefinitely open connections
+# - Env: CATLOADER_SSE_TIMEOUT
+SSE_STREAM_TIMEOUT = _get_int_env("CATLOADER_SSE_TIMEOUT", 600)  # 10 minutes
+
 # yt-dlp internal socket timeout (configured in downloader.py)
 # - Limits individual HTTP operations within yt-dlp
 # - Helps terminate orphaned threads after asyncio timeout
@@ -111,9 +118,12 @@ import re
 
 URL_PATTERN = re.compile(
     r'^https?://'  # http:// or https://
-    r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,}|'  # domain
+    r'(?:'
+    r'(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,}|'  # domain
     r'localhost|'  # or localhost
-    r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # or IPv4
+    r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|'  # or IPv4
+    r'\[(?:[A-F0-9]{0,4}:){2,7}[A-F0-9]{0,4}\]'  # or IPv6 in brackets (e.g., [::1], [2001:db8::1])
+    r')'
     r'(?::\d+)?'  # optional port
     r'(?:/?|[/?]\S+)$',  # path
     re.IGNORECASE
