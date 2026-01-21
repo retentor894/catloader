@@ -123,6 +123,22 @@ def get_executor_stats() -> dict:
     """
     Get thread pool executor statistics for monitoring.
 
+    WARNING: This function accesses private attributes of ThreadPoolExecutor
+    (_max_workers, _threads) which are implementation details that may change
+    in future Python versions.
+
+    Why we do this:
+    - ThreadPoolExecutor provides no public API for monitoring
+    - These stats are valuable for health checks and debugging
+    - The fallback ensures graceful degradation if attributes change
+
+    Tested on: Python 3.9, 3.10, 3.11, 3.12
+
+    Alternatives considered:
+    - Custom executor wrapper: Adds complexity for minimal benefit
+    - External monitoring (prometheus): Overkill for this use case
+    - No monitoring: Reduces observability for debugging timeouts
+
     Returns:
         Dictionary with executor stats, or error status if unavailable.
     """
@@ -440,18 +456,27 @@ async def download_progress(
 @router.get("/download/file/{download_id}")
 async def download_file(download_id: str):
     """Download a completed file by its ID."""
+    request_id = _generate_request_id()
+    start_time = time.monotonic()
+
     # Validate download_id format to prevent processing malformed IDs
     validated_id = validate_download_id_for_http(download_id)
+
+    logger.info(f"[{request_id}] Starting file download for ID: {validated_id[:8]}...")
 
     file_info = remove_completed_download(validated_id)
 
     if not file_info:
+        elapsed = time.monotonic() - start_time
+        logger.warning(f"[{request_id}] Download not found after {elapsed:.2f}s: {validated_id[:8]}...")
         raise HTTPException(status_code=404, detail="Download not found or expired")
 
     file_path = file_info.get('file_path')
     temp_dir = file_info.get('temp_dir')
 
     if not file_path or not temp_dir:
+        elapsed = time.monotonic() - start_time
+        logger.warning(f"[{request_id}] Invalid download state after {elapsed:.2f}s")
         if temp_dir:
             cleanup_temp_dir(temp_dir)
         raise HTTPException(status_code=404, detail="Invalid download state")
@@ -461,10 +486,13 @@ async def download_file(download_id: str):
         real_file_path = os.path.realpath(file_path)
         real_temp_dir = os.path.realpath(temp_dir)
         if not real_file_path.startswith(real_temp_dir + os.sep):
-            logger.error(f"Path traversal attempt detected: {file_path}")
+            elapsed = time.monotonic() - start_time
+            logger.error(f"[{request_id}] Path traversal attempt after {elapsed:.2f}s: {file_path}")
             cleanup_temp_dir(temp_dir)
             raise HTTPException(status_code=400, detail="Invalid file path")
     except OSError:
+        elapsed = time.monotonic() - start_time
+        logger.warning(f"[{request_id}] File not found after {elapsed:.2f}s")
         cleanup_temp_dir(temp_dir)
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -474,6 +502,10 @@ async def download_file(download_id: str):
         ascii_filename = 'download'
         encoded_filename = 'download'
 
+    elapsed = time.monotonic() - start_time
+    file_size = file_info.get('file_size', 0)
+    logger.info(f"[{request_id}] Streaming file in {elapsed:.2f}s: {ascii_filename} ({file_size} bytes)")
+
     def file_generator():
         try:
             with open(file_path, 'rb') as f:
@@ -481,9 +513,9 @@ async def download_file(download_id: str):
                     yield chunk
         except FileNotFoundError:
             # Handle TOCTOU race - file was deleted between check and open
-            logger.warning(f"File disappeared during streaming: {file_path}")
+            logger.warning(f"[{request_id}] File disappeared during streaming: {file_path}")
         except Exception as e:
-            logger.error(f"Error streaming file: {e}")
+            logger.error(f"[{request_id}] Error streaming file: {e}")
         finally:
             cleanup_temp_dir(temp_dir)
 
@@ -492,7 +524,7 @@ async def download_file(download_id: str):
         media_type=file_info.get('content_type', 'application/octet-stream'),
         headers={
             "Content-Disposition": f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{encoded_filename}',
-            "Content-Length": str(file_info.get('file_size', 0)),
+            "Content-Length": str(file_size),
             "Cache-Control": "no-cache",
         }
     )

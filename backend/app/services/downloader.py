@@ -1,16 +1,32 @@
-import yt_dlp
-import tempfile
-import os
-import shutil
-import logging
-import json
-import queue
-import threading
-import secrets
-import time
 import atexit
+import json
+import logging
+import os
+import queue
+import secrets
+import shutil
+import tempfile
+import threading
+import time
 from typing import Generator, Tuple, Dict, Any, Optional, NamedTuple, TypedDict
+
+import yt_dlp
+
 from ..models.schemas import VideoInfo, VideoFormat
+from ..exceptions import VideoExtractionError, DownloadError, NetworkError, FileSizeLimitError
+from ..config import (
+    MAX_FILE_SIZE,
+    YTDLP_SOCKET_TIMEOUT,
+    DOWNLOAD_EXPIRY_SECONDS,
+    MAX_COMPLETED_DOWNLOADS,
+    CHUNK_SIZE,
+    ORPHAN_CLEANUP_AGE_SECONDS,
+    TEMP_DIR_PREFIX,
+    YTDLP_USER_AGENT,
+    PROGRESS_POLL_INTERVAL,
+)
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -39,21 +55,6 @@ class PostprocessorHookData(TypedDict, total=False):
     info_dict: Dict[str, Any]
 
 
-from ..exceptions import VideoExtractionError, DownloadError, NetworkError, FileSizeLimitError
-from ..config import (
-    MAX_FILE_SIZE,
-    YTDLP_SOCKET_TIMEOUT,
-    DOWNLOAD_EXPIRY_SECONDS,
-    MAX_COMPLETED_DOWNLOADS,
-    CHUNK_SIZE,
-    ORPHAN_CLEANUP_AGE_SECONDS,
-    TEMP_DIR_PREFIX,
-    YTDLP_USER_AGENT,
-)
-
-logger = logging.getLogger(__name__)
-
-
 class DownloadResult(NamedTuple):
     """Result of a video/audio download operation."""
     filename: str
@@ -67,8 +68,8 @@ class DownloadResult(NamedTuple):
 # Note: Configurable constants are in config.py:
 # - DOWNLOAD_EXPIRY_SECONDS, MAX_COMPLETED_DOWNLOADS, CHUNK_SIZE
 # - ORPHAN_CLEANUP_AGE_SECONDS, TEMP_DIR_PREFIX, YTDLP_USER_AGENT
+# - PROGRESS_POLL_INTERVAL
 
-PROGRESS_POLL_INTERVAL = 0.5  # seconds between progress updates
 THREAD_JOIN_TIMEOUT = 2.0  # seconds to wait for thread on cancellation
 DOWNLOAD_ID_BYTES = 32  # 256 bits of entropy for secure tokens
 

@@ -5,8 +5,6 @@ Utility functions for retry logic and metrics collection.
 import asyncio
 import logging
 import threading
-import time
-from functools import wraps
 from typing import TypeVar, Callable, Type, Tuple, Awaitable
 
 from .config import MAX_RETRIES, RETRY_BASE_DELAY, RETRY_MAX_DELAY, METRICS_ENABLED
@@ -104,12 +102,6 @@ metrics = Metrics()
 # =============================================================================
 # Retry Logic
 # =============================================================================
-# Note: with_retry decorator is a general-purpose utility that may be used by:
-# - External consumers of this module
-# - Future endpoints that need synchronous retry logic
-# - Integration with third-party libraries that don't support async
-# Currently, async operations use with_retry_async directly.
-# =============================================================================
 
 # Exceptions that should trigger a retry (transient errors)
 # TransientError is the base class for all transient errors in CatLoader
@@ -133,65 +125,6 @@ def calculate_backoff_delay(attempt: int) -> float:
     """
     delay = RETRY_BASE_DELAY * (2 ** attempt)
     return min(delay, RETRY_MAX_DELAY)
-
-
-def with_retry(
-    max_retries: int = MAX_RETRIES,
-    retryable_exceptions: Tuple[Type[Exception], ...] = RETRYABLE_EXCEPTIONS,
-    operation_name: str = "operation",
-):
-    """
-    Decorator that adds retry logic with exponential backoff.
-
-    WARNING: This decorator is for SYNCHRONOUS functions only. It uses time.sleep()
-    which will block the event loop if used with async code. For async functions,
-    use with_retry_async() instead.
-
-    Args:
-        max_retries: Maximum number of retry attempts
-        retryable_exceptions: Tuple of exception types that should trigger retry
-        operation_name: Name for logging/metrics
-
-    Usage:
-        @with_retry(max_retries=3, operation_name="video_info")
-        def get_video_info(url):  # sync function only!
-            ...
-    """
-    def decorator(func: Callable[..., T]) -> Callable[..., T]:
-        @wraps(func)
-        def wrapper(*args, **kwargs) -> T:
-            last_exception = None
-
-            for attempt in range(max_retries + 1):
-                try:
-                    return func(*args, **kwargs)
-                except retryable_exceptions as e:
-                    last_exception = e
-
-                    if attempt < max_retries:
-                        delay = calculate_backoff_delay(attempt)
-                        metrics.record_retry(
-                            operation=operation_name,
-                            attempt=attempt + 1,
-                            delay=delay,
-                            error=str(e)[:100]
-                        )
-                        logger.warning(
-                            f"Retry {attempt + 1}/{max_retries} for {operation_name} "
-                            f"after error: {e}. Waiting {delay:.1f}s..."
-                        )
-                        time.sleep(delay)
-                    else:
-                        logger.error(
-                            f"All {max_retries} retries exhausted for {operation_name}. "
-                            f"Last error: {e}"
-                        )
-
-            # All retries exhausted, raise the last exception
-            raise last_exception
-
-        return wrapper
-    return decorator
 
 
 async def with_retry_async(
@@ -247,4 +180,8 @@ async def with_retry_async(
                 )
 
     # All retries exhausted, raise the last exception
+    # Type assertion: last_exception is guaranteed to be set if we reach here
+    # because the loop executes at least once (max_retries >= 0) and we only
+    # exit the loop without returning if an exception was caught
+    assert last_exception is not None, "Unreachable: loop must have caught an exception"
     raise last_exception

@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, patch
 from app.utils import (
     Metrics,
     calculate_backoff_delay,
-    with_retry,
     with_retry_async,
     RETRYABLE_EXCEPTIONS,
 )
@@ -122,62 +121,6 @@ class TestCalculateBackoffDelay:
         # Default RETRY_MAX_DELAY is 10.0
         delay = calculate_backoff_delay(10)  # Would be 1024 without cap
         assert delay == 10.0
-
-
-class TestWithRetry:
-    """Test synchronous retry decorator."""
-
-    def test_returns_value_on_success(self):
-        """Should return function value on first successful call."""
-        @with_retry(max_retries=3, operation_name="test")
-        def successful_func():
-            return "success"
-
-        result = successful_func()
-        assert result == "success"
-
-    def test_retries_on_retryable_exception(self):
-        """Should retry on retryable exceptions."""
-        call_count = 0
-
-        @with_retry(max_retries=3, retryable_exceptions=(NetworkError,), operation_name="test")
-        def failing_then_success():
-            nonlocal call_count
-            call_count += 1
-            if call_count < 3:
-                raise NetworkError("Network error")
-            return "success"
-
-        with patch('app.utils.time.sleep'):  # Skip actual sleep
-            result = failing_then_success()
-
-        assert result == "success"
-        assert call_count == 3
-
-    def test_raises_after_max_retries(self):
-        """Should raise last exception after exhausting retries."""
-        @with_retry(max_retries=2, retryable_exceptions=(NetworkError,), operation_name="test")
-        def always_fails():
-            raise NetworkError("Persistent error")
-
-        with patch('app.utils.time.sleep'):
-            with pytest.raises(NetworkError, match="Persistent error"):
-                always_fails()
-
-    def test_does_not_retry_non_retryable_exception(self):
-        """Should not retry on non-retryable exceptions."""
-        call_count = 0
-
-        @with_retry(max_retries=3, retryable_exceptions=(NetworkError,), operation_name="test")
-        def raises_value_error():
-            nonlocal call_count
-            call_count += 1
-            raise ValueError("Not retryable")
-
-        with pytest.raises(ValueError, match="Not retryable"):
-            raises_value_error()
-
-        assert call_count == 1  # No retries
 
 
 class TestWithRetryAsync:

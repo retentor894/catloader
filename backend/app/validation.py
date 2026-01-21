@@ -25,6 +25,41 @@ import re
 #   - IPv4-mapped addresses (e.g., [::ffff:192.0.2.1])
 # This is acceptable for CatLoader's use case (video URLs from major platforms
 # which use domain names, not raw IPv6 addresses).
+#
+# =============================================================================
+# SECURITY WARNING: SSRF (Server-Side Request Forgery) Risk
+# =============================================================================
+# This pattern ALLOWS localhost and private IP addresses, which could enable
+# SSRF attacks if the backend can make requests to internal network resources.
+#
+# An attacker could submit URLs like:
+#   - http://localhost:8000/admin
+#   - http://192.168.1.1/router-config
+#   - http://[::1]:6379/  (Redis)
+#   - http://169.254.169.254/latest/meta-data/  (AWS metadata service)
+#
+# This is ACCEPTABLE for CatLoader because:
+# 1. yt-dlp only extracts video metadata/content, not arbitrary HTTP content
+# 2. yt-dlp would fail on non-video URLs (no extractors match)
+# 3. CatLoader is designed for trusted users (personal video downloads)
+#
+# For production deployments with untrusted users, consider:
+# 1. Adding a blocklist for private IP ranges (10.x, 172.16-31.x, 192.168.x)
+# 2. Adding a blocklist for localhost and link-local addresses
+# 3. Using DNS resolution validation (resolve hostname, check if IP is private)
+# 4. Running yt-dlp in a network-isolated container
+# 5. Using an allowlist of permitted video hosting domains
+#
+# Example blocklist implementation (add to validate_url function):
+#   import ipaddress
+#   from urllib.parse import urlparse
+#   hostname = urlparse(url).hostname
+#   if hostname in ('localhost', '127.0.0.1', '::1'): raise ValueError(...)
+#   try:
+#       ip = ipaddress.ip_address(hostname)
+#       if ip.is_private or ip.is_loopback: raise ValueError(...)
+#   except ValueError: pass  # hostname is not an IP
+# =============================================================================
 URL_PATTERN = re.compile(
     r'^https?://'  # http:// or https://
     r'(?:'

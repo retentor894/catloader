@@ -164,6 +164,12 @@ YTDLP_USER_AGENT = os.environ.get(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
+# Interval between SSE progress updates (seconds)
+# - Lower values give more responsive UI but increase server load
+# - Higher values reduce load but make progress appear to update in chunks
+# - Env: CATLOADER_PROGRESS_POLL_INTERVAL
+PROGRESS_POLL_INTERVAL = _get_float_env("CATLOADER_PROGRESS_POLL_INTERVAL", 0.5)
+
 # =============================================================================
 # Metrics Configuration
 # =============================================================================
