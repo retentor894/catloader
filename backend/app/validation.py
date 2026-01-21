@@ -8,6 +8,8 @@ This module is separate from config.py to follow Single Responsibility Principle
 
 import re
 
+from .config import MAX_URL_LENGTH
+
 # URL validation pattern supporting:
 # - HTTP and HTTPS protocols
 # - Domain names (e.g., youtube.com)
@@ -85,12 +87,17 @@ def validate_url(url: str) -> str:
         The cleaned/trimmed URL
 
     Raises:
-        ValueError: If URL is empty or invalid format
+        ValueError: If URL is empty, too long, or invalid format
     """
     if not url or not url.strip():
         raise ValueError("URL cannot be empty")
 
     url = url.strip()
+
+    # Check length before regex to prevent ReDoS and memory issues
+    if len(url) > MAX_URL_LENGTH:
+        raise ValueError(f"URL too long (max {MAX_URL_LENGTH} characters)")
+
     if not URL_PATTERN.match(url):
         raise ValueError("Invalid URL format. URL must start with http:// or https://")
 

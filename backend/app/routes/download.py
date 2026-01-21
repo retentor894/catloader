@@ -75,6 +75,43 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
 
+# Maximum length for error messages in metrics (prevents log bloat)
+_METRICS_ERROR_MAX_LENGTH = 100
+
+
+def _truncate_error(error: str, max_length: int = _METRICS_ERROR_MAX_LENGTH) -> str:
+    """Truncate error message with indication if truncated."""
+    if len(error) <= max_length:
+        return error
+    # Leave room for "..." suffix
+    return error[:max_length - 3] + "..."
+
+
+def _sanitize_for_log(value: str, max_length: int = 200) -> str:
+    """
+    Sanitize user-controlled data for safe logging.
+
+    Prevents log injection attacks by removing/escaping:
+    - Newlines (could create fake log entries)
+    - Carriage returns (same)
+    - ANSI escape codes (could corrupt terminals/log viewers)
+
+    Args:
+        value: User-controlled string to sanitize
+        max_length: Maximum length to prevent log bloat
+
+    Returns:
+        Sanitized string safe for logging
+    """
+    # Remove newlines and carriage returns
+    sanitized = value.replace('\n', '\\n').replace('\r', '\\r')
+    # Remove ANSI escape sequences (CSI sequences start with ESC[)
+    sanitized = sanitized.replace('\x1b', '\\x1b')
+    # Truncate if too long
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length - 3] + "..."
+    return sanitized
+
 
 def validate_url_for_http(url: str) -> str:
     """
@@ -304,7 +341,7 @@ async def get_info(request: URLRequest):
     request_id = _generate_request_id()
     start_time = time.monotonic()
 
-    logger.info(f"[{request_id}] Starting info extraction for: {request.url}")
+    logger.info(f"[{request_id}] Starting info extraction for: {_sanitize_for_log(request.url)}")
 
     try:
         # Note: No retry at endpoint level to avoid multiplying timeout
@@ -335,22 +372,22 @@ async def get_info(request: URLRequest):
         )
     except VideoExtractionError as e:
         elapsed = time.monotonic() - start_time
-        metrics.record_error(operation="info_extraction", error=str(e)[:100], elapsed=elapsed)
+        metrics.record_error(operation="info_extraction", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Extraction error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except NetworkError as e:
         elapsed = time.monotonic() - start_time
-        metrics.record_error(operation="info_extraction", error=str(e)[:100], elapsed=elapsed)
+        metrics.record_error(operation="info_extraction", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Network error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=503, detail=str(e))
     except CatLoaderError as e:
         elapsed = time.monotonic() - start_time
-        metrics.record_error(operation="info_extraction", error=str(e)[:100], elapsed=elapsed)
+        metrics.record_error(operation="info_extraction", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Application error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         elapsed = time.monotonic() - start_time
-        metrics.record_error(operation="info_extraction", error=str(e)[:100], elapsed=elapsed)
+        metrics.record_error(operation="info_extraction", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.exception(f"[{request_id}] Unexpected error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
@@ -369,7 +406,7 @@ async def download(
     validated_url = validate_url_for_http(url)
     validated_format_id = validate_format_id_for_http(format_id)
 
-    logger.info(f"[{request_id}] Starting download for: {validated_url} (format={validated_format_id}, audio_only={audio_only})")
+    logger.info(f"[{request_id}] Starting download for: {_sanitize_for_log(validated_url)} (format={validated_format_id}, audio_only={audio_only})")
 
     file_stream = None
     try:
@@ -422,27 +459,27 @@ async def download(
         )
     except FileSizeLimitError as e:
         elapsed = time.monotonic() - start_time
-        metrics.record_error(operation="download", error=str(e)[:100], elapsed=elapsed)
+        metrics.record_error(operation="download", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] File size limit exceeded after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=413, detail=str(e))
     except DownloadError as e:
         elapsed = time.monotonic() - start_time
-        metrics.record_error(operation="download", error=str(e)[:100], elapsed=elapsed)
+        metrics.record_error(operation="download", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Download error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except NetworkError as e:
         elapsed = time.monotonic() - start_time
-        metrics.record_error(operation="download", error=str(e)[:100], elapsed=elapsed)
+        metrics.record_error(operation="download", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Network error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=503, detail=str(e))
     except CatLoaderError as e:
         elapsed = time.monotonic() - start_time
-        metrics.record_error(operation="download", error=str(e)[:100], elapsed=elapsed)
+        metrics.record_error(operation="download", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Application error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         elapsed = time.monotonic() - start_time
-        metrics.record_error(operation="download", error=str(e)[:100], elapsed=elapsed)
+        metrics.record_error(operation="download", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.exception(f"[{request_id}] Unexpected error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
     finally:
@@ -491,14 +528,28 @@ async def download_progress(
                 # Check if connection has exceeded maximum allowed time
                 elapsed = time.monotonic() - start_time
                 if elapsed > SSE_STREAM_TIMEOUT:
-                    logger.warning(f"SSE stream timeout after {elapsed:.0f}s for {validated_url}")
-                    yield f"data: {json.dumps({'status': 'error', 'message': 'Connection timeout'})}\n\n"
+                    logger.warning(f"SSE stream timeout after {elapsed:.0f}s for {_sanitize_for_log(validated_url)}")
+                    yield f"data: {json.dumps({'status': 'error', 'error_type': 'timeout', 'message': 'Connection timeout', 'retryable': True})}\n\n"
                     return
                 yield event
+        except NetworkError as e:
+            # Transient network errors - client can retry
+            elapsed = time.monotonic() - start_time
+            logger.warning(f"Network error in download progress stream: {e}")
+            metrics.record_error(operation="download_progress", error=_truncate_error(str(e)), elapsed=elapsed)
+            yield f"data: {json.dumps({'status': 'error', 'error_type': 'network', 'message': str(e), 'retryable': True})}\n\n"
+        except (DownloadError, CatLoaderError) as e:
+            # Permanent errors - no point retrying
+            elapsed = time.monotonic() - start_time
+            logger.warning(f"Download error in progress stream: {e}")
+            metrics.record_error(operation="download_progress", error=_truncate_error(str(e)), elapsed=elapsed)
+            yield f"data: {json.dumps({'status': 'error', 'error_type': 'download', 'message': str(e), 'retryable': False})}\n\n"
         except Exception as e:
-            logger.exception(f"Error in download progress stream: {e}")
-            metrics.record_error(operation="download_progress", error=str(e)[:100], elapsed=time.monotonic() - start_time)
-            yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
+            # Unknown errors - log full traceback, assume not retryable
+            elapsed = time.monotonic() - start_time
+            logger.exception(f"Unexpected error in download progress stream: {e}")
+            metrics.record_error(operation="download_progress", error=_truncate_error(str(e)), elapsed=elapsed)
+            yield f"data: {json.dumps({'status': 'error', 'error_type': 'internal', 'message': str(e), 'retryable': False})}\n\n"
         # Note: Semaphore release is handled by SemaphoreGuardedIterator.close()
         # This guarantees release even if client disconnects before iteration starts
 

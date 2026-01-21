@@ -130,6 +130,12 @@ RETRY_MAX_DELAY = _get_float_env("CATLOADER_RETRY_MAX_DELAY", 10.0)
 # - Env: CATLOADER_MAX_FILE_SIZE
 MAX_FILE_SIZE = _get_int_env("CATLOADER_MAX_FILE_SIZE", 2 * 1024 * 1024 * 1024)  # 2GB
 
+# Maximum URL length allowed (characters)
+# - Prevents memory exhaustion from crafted long URLs
+# - Most browsers limit URLs to 2048-8192 characters
+# - Env: CATLOADER_MAX_URL_LENGTH
+MAX_URL_LENGTH = _get_int_env("CATLOADER_MAX_URL_LENGTH", 2048)
+
 # =============================================================================
 # Downloader Configuration
 # =============================================================================

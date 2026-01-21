@@ -29,6 +29,12 @@ from ..config import (
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_for_log(value: str, max_length: int = 200) -> str:
+    """Sanitize user-controlled data for safe logging."""
+    sanitized = value.replace('\n', '\\n').replace('\r', '\\r').replace('\x1b', '\\x1b')
+    return sanitized[:max_length - 3] + "..." if len(sanitized) > max_length else sanitized
+
+
 # =============================================================================
 # Type Definitions for yt-dlp hooks
 # =============================================================================
@@ -245,8 +251,11 @@ def store_completed_download(file_info: Dict[str, Any]) -> str:
         # Clean expired downloads (collect dirs only, don't do I/O)
         dirs_to_clean.extend(_collect_expired_downloads_locked())
 
-        # Check capacity and remove oldest if needed
-        if len(_completed_downloads) >= MAX_COMPLETED_DOWNLOADS:
+        # Check capacity and remove oldest entries until under limit
+        # Using while loop ensures we handle traffic spikes where many downloads
+        # complete between cleanup cycles (prevents unbounded memory growth)
+        evicted_count = 0
+        while len(_completed_downloads) >= MAX_COMPLETED_DOWNLOADS:
             oldest_key = min(
                 _completed_downloads.keys(),
                 key=lambda k: _completed_downloads[k].get('created_at', 0)
@@ -254,7 +263,10 @@ def store_completed_download(file_info: Dict[str, Any]) -> str:
             old_info = _completed_downloads.pop(oldest_key)
             if old_info and 'temp_dir' in old_info:
                 dirs_to_clean.append(old_info['temp_dir'])
-            logger.warning("Evicted oldest download due to capacity limit")
+            evicted_count += 1
+
+        if evicted_count > 0:
+            logger.warning(f"Evicted {evicted_count} download(s) due to capacity limit")
 
         _completed_downloads[download_id] = stored_info
 
@@ -348,7 +360,7 @@ def get_video_info(url: str) -> VideoInfo:
             raise VideoExtractionError(f"Could not extract video information: {e}") from e
     except (OSError, ConnectionError, TimeoutError) as e:
         # Known transient errors - wrap as NetworkError for retry
-        logger.warning(f"Transient error extracting video info for {url}: {e}")
+        logger.warning(f"Transient error extracting video info for {_sanitize_for_log(url)}: {e}")
         raise NetworkError(f"Network error: {e}") from e
     except Exception as e:
         # Unknown errors - log and re-raise without wrapping as transient
@@ -513,7 +525,7 @@ def download_video(url: str, format_id: str, audio_only: bool = False) -> Downlo
     except (OSError, ConnectionError, TimeoutError) as e:
         # Known transient errors - wrap as NetworkError for retry
         cleanup_temp_dir(temp_dir)
-        logger.warning(f"Transient error downloading {url}: {e}")
+        logger.warning(f"Transient error downloading {_sanitize_for_log(url)}: {e}")
         raise NetworkError(f"Network error during download: {e}") from e
     except Exception as e:
         # Unknown errors - log and re-raise without wrapping as transient
@@ -683,7 +695,7 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
         # Client disconnected - signal cancellation and cleanup
         client_disconnected = True
         cancelled.set()
-        logger.info(f"Client disconnected, cancelling download for {url}")
+        logger.info(f"Client disconnected, cancelling download for {_sanitize_for_log(url)}")
     finally:
         if client_disconnected:
             # Wait briefly for thread to notice cancellation
@@ -709,6 +721,15 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
 
     filename = os.path.basename(downloaded_file)
     file_size = os.path.getsize(downloaded_file)
+
+    # Check file size limit (0 means no limit) - same check as download_video
+    if MAX_FILE_SIZE > 0 and file_size > MAX_FILE_SIZE:
+        cleanup_temp_dir(temp_dir)
+        size_mb = file_size / (1024 * 1024)
+        limit_mb = MAX_FILE_SIZE / (1024 * 1024)
+        yield f"data: {json.dumps({'status': 'error', 'message': f'File size ({size_mb:.1f} MB) exceeds maximum allowed ({limit_mb:.1f} MB)'})}\n\n"
+        return
+
     ext = os.path.splitext(filename)[1].lower()
     content_type = get_content_type(ext)
 
