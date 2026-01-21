@@ -3,8 +3,10 @@
 // - All other cases (Docker, Cloudflare Tunnel, reverse proxy): use relative URL
 const API_URL = window.location.port === '5500' ? 'http://localhost:8000' : '';
 
-// Timeout for video info extraction (ms) - long videos may need more time
-const INFO_FETCH_TIMEOUT = 120000; // 2 minutes
+// Timeout for video info extraction (ms)
+// Must be slightly higher than backend timeout (90s) to ensure we receive backend's error response
+// Backend timeout: 90s, Frontend timeout: 95s (5s buffer for network latency)
+const INFO_FETCH_TIMEOUT = 95000;
 
 const elements = {
     urlInput: document.getElementById('url-input'),
@@ -263,8 +265,6 @@ async function fetchVideoInfo() {
             body: JSON.stringify({ url }),
             signal: controller.signal,
         });
-
-        clearTimeout(timeoutId);
 
         // Handle error responses - check Content-Type to detect HTML error pages
         if (!response.ok) {

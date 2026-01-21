@@ -2,13 +2,14 @@ import asyncio
 import json
 import logging
 import os
-import re
-from concurrent.futures import ThreadPoolExecutor, Future, TimeoutError as FuturesTimeoutError
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor, Future
 from functools import partial
 from urllib.parse import quote
-from typing import TypeVar, Callable, Any
+from typing import TypeVar, Callable
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from ..models.schemas import URLRequest, VideoInfo, ErrorResponse
@@ -21,40 +22,29 @@ from ..services.downloader import (
     CHUNK_SIZE,
 )
 from ..exceptions import VideoExtractionError, DownloadError, NetworkError, CatLoaderError
+from ..config import (
+    INFO_EXTRACTION_TIMEOUT,
+    DOWNLOAD_INIT_TIMEOUT,
+    THREAD_POOL_MAX_WORKERS,
+    validate_url as config_validate_url,
+)
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
 
-# Timeout for video info extraction (seconds)
-INFO_EXTRACTION_TIMEOUT = 90
 
-# Timeout for download initiation (seconds) - covers yt-dlp extraction + download start
-# Note: This doesn't limit the actual file transfer, only the initial processing
-DOWNLOAD_INIT_TIMEOUT = 300
+def validate_url_for_http(url: str) -> str:
+    """
+    Validate URL and convert ValueError to HTTPException.
 
-# URL validation pattern
-URL_PATTERN = re.compile(
-    r'^https?://'
-    r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,}|'
-    r'localhost|'
-    r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'
-    r'(?::\d+)?'
-    r'(?:/?|[/?]\S+)$',
-    re.IGNORECASE
-)
-
-
-def validate_url(url: str) -> str:
-    """Validate URL format and return cleaned URL."""
-    if not url or not url.strip():
-        raise HTTPException(status_code=400, detail="URL cannot be empty")
-
-    url = url.strip()
-    if not URL_PATTERN.match(url):
-        raise HTTPException(status_code=400, detail="Invalid URL format")
-
-    return url
+    This is a thin wrapper around config.validate_url that converts
+    ValueError exceptions to HTTPException for use in HTTP handlers.
+    """
+    try:
+        return config_validate_url(url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 def sanitize_filename(filename: str) -> str:
@@ -71,7 +61,12 @@ router = APIRouter(prefix="/api", tags=["download"])
 
 # Thread pool for blocking operations
 # Note: Using more workers to handle orphaned threads from timeouts
-_executor = ThreadPoolExecutor(max_workers=8)
+_executor = ThreadPoolExecutor(max_workers=THREAD_POOL_MAX_WORKERS)
+
+
+def _generate_request_id() -> str:
+    """Generate a short request ID for logging correlation."""
+    return uuid.uuid4().hex[:8]
 
 
 async def run_in_executor(func, *args, **kwargs):
@@ -136,16 +131,25 @@ async def run_with_timeout(
 @router.post("/info", response_model=VideoInfo, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 504: {"model": ErrorResponse}})
 async def get_info(request: URLRequest):
     """Get video information and available formats."""
+    request_id = _generate_request_id()
+    start_time = time.monotonic()
+
+    logger.info(f"[{request_id}] Starting info extraction for: {request.url}")
+
     try:
         info = await run_with_timeout(
             get_video_info,
             INFO_EXTRACTION_TIMEOUT,
             request.url
         )
+        elapsed = time.monotonic() - start_time
+        logger.info(f"[{request_id}] Info extraction completed in {elapsed:.2f}s")
         return info
     except asyncio.TimeoutError:
+        elapsed = time.monotonic() - start_time
         logger.warning(
-            f"Timeout after {INFO_EXTRACTION_TIMEOUT}s extracting info for {request.url}. "
+            f"[{request_id}] Timeout after {elapsed:.2f}s (limit: {INFO_EXTRACTION_TIMEOUT}s) "
+            f"extracting info for {request.url}. "
             f"Note: Background thread may continue until yt-dlp's socket_timeout."
         )
         raise HTTPException(
@@ -153,16 +157,20 @@ async def get_info(request: URLRequest):
             detail="Video info extraction timed out. The video may be too long or the server is busy. Please try again."
         )
     except VideoExtractionError as e:
-        # Client error - invalid/unsupported URL
+        elapsed = time.monotonic() - start_time
+        logger.warning(f"[{request_id}] Extraction error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except NetworkError as e:
-        # Server/network error
+        elapsed = time.monotonic() - start_time
+        logger.warning(f"[{request_id}] Network error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=503, detail=str(e))
     except CatLoaderError as e:
-        # Other application errors
+        elapsed = time.monotonic() - start_time
+        logger.warning(f"[{request_id}] Application error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        # Unexpected errors - 500
+        elapsed = time.monotonic() - start_time
+        logger.exception(f"[{request_id}] Unexpected error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
@@ -173,14 +181,23 @@ async def download(
     audio_only: bool = Query(False, description="Download audio only")
 ):
     """Download video or audio file."""
+    request_id = _generate_request_id()
+    start_time = time.monotonic()
+
+    # FastAPI already decodes query params - don't double-decode
+    validated_url = validate_url_for_http(url)
+
+    logger.info(f"[{request_id}] Starting download for: {validated_url} (format={format_id}, audio_only={audio_only})")
+
     try:
-        # FastAPI already decodes query params - don't double-decode
-        validated_url = validate_url(url)
         filename, content_type, file_size, file_stream = await run_with_timeout(
             download_video,
             DOWNLOAD_INIT_TIMEOUT,
             validated_url, format_id, audio_only
         )
+
+        elapsed = time.monotonic() - start_time
+        logger.info(f"[{request_id}] Download ready in {elapsed:.2f}s: {filename} ({file_size} bytes)")
 
         # Sanitize filename for Content-Disposition header (RFC 5987)
         ascii_filename, encoded_filename = sanitize_filename(filename)
@@ -198,8 +215,10 @@ async def download(
             }
         )
     except asyncio.TimeoutError:
+        elapsed = time.monotonic() - start_time
         logger.warning(
-            f"Timeout after {DOWNLOAD_INIT_TIMEOUT}s downloading {url}. "
+            f"[{request_id}] Timeout after {elapsed:.2f}s (limit: {DOWNLOAD_INIT_TIMEOUT}s) "
+            f"downloading {validated_url}. "
             f"Note: Background thread may continue until yt-dlp's socket_timeout."
         )
         raise HTTPException(
@@ -207,16 +226,20 @@ async def download(
             detail="Download timed out. The video may be too large or the server is busy. Please try again."
         )
     except DownloadError as e:
-        # Client error - download failed
+        elapsed = time.monotonic() - start_time
+        logger.warning(f"[{request_id}] Download error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except NetworkError as e:
-        # Server/network error
+        elapsed = time.monotonic() - start_time
+        logger.warning(f"[{request_id}] Network error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=503, detail=str(e))
     except CatLoaderError as e:
-        # Other application errors
+        elapsed = time.monotonic() - start_time
+        logger.warning(f"[{request_id}] Application error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        # Unexpected errors - 500
+        elapsed = time.monotonic() - start_time
+        logger.exception(f"[{request_id}] Unexpected error after {elapsed:.2f}s: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
@@ -228,7 +251,7 @@ async def download_progress(
 ):
     """Stream download progress via Server-Sent Events."""
     # FastAPI already decodes query params - don't double-decode
-    validated_url = validate_url(url)
+    validated_url = validate_url_for_http(url)
 
     def event_generator():
         try:
