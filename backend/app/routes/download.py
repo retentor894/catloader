@@ -5,7 +5,7 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-from urllib.parse import unquote, quote
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -99,9 +99,10 @@ async def download(
 ):
     """Download video or audio file."""
     try:
-        decoded_url = validate_url(unquote(url))
+        # FastAPI already decodes query params - don't double-decode
+        validated_url = validate_url(url)
         filename, content_type, file_size, file_stream = await run_in_executor(
-            download_video, decoded_url, format_id, audio_only
+            download_video, validated_url, format_id, audio_only
         )
 
         # Sanitize filename for Content-Disposition header (RFC 5987)
@@ -140,11 +141,12 @@ async def download_progress(
     audio_only: bool = Query(False, description="Download audio only")
 ):
     """Stream download progress via Server-Sent Events."""
-    decoded_url = validate_url(unquote(url))
+    # FastAPI already decodes query params - don't double-decode
+    validated_url = validate_url(url)
 
     def event_generator():
         try:
-            yield from download_video_with_progress(decoded_url, format_id, audio_only)
+            yield from download_video_with_progress(validated_url, format_id, audio_only)
         except Exception as e:
             logger.exception(f"Error in download progress stream: {e}")
             yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
