@@ -3,9 +3,10 @@ import json
 import logging
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, Future, TimeoutError as FuturesTimeoutError
 from functools import partial
 from urllib.parse import quote
+from typing import TypeVar, Callable, Any
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -23,8 +24,14 @@ from ..exceptions import VideoExtractionError, DownloadError, NetworkError, CatL
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar('T')
+
 # Timeout for video info extraction (seconds)
 INFO_EXTRACTION_TIMEOUT = 90
+
+# Timeout for download initiation (seconds) - covers yt-dlp extraction + download start
+# Note: This doesn't limit the actual file transfer, only the initial processing
+DOWNLOAD_INIT_TIMEOUT = 300
 
 # URL validation pattern
 URL_PATTERN = re.compile(
@@ -63,7 +70,8 @@ def sanitize_filename(filename: str) -> str:
 router = APIRouter(prefix="/api", tags=["download"])
 
 # Thread pool for blocking operations
-_executor = ThreadPoolExecutor(max_workers=4)
+# Note: Using more workers to handle orphaned threads from timeouts
+_executor = ThreadPoolExecutor(max_workers=8)
 
 
 async def run_in_executor(func, *args, **kwargs):
@@ -74,17 +82,72 @@ async def run_in_executor(func, *args, **kwargs):
     return await loop.run_in_executor(_executor, func, *args)
 
 
+async def run_with_timeout(
+    func: Callable[..., T],
+    timeout: float,
+    *args,
+    **kwargs
+) -> T:
+    """
+    Run a blocking function with timeout handling.
+
+    IMPORTANT: When timeout occurs, the underlying thread continues running until
+    yt-dlp completes (limited by its socket_timeout). This is a known limitation
+    because yt-dlp doesn't support cooperative cancellation. The thread will be
+    orphaned but will eventually terminate due to yt-dlp's internal timeouts.
+
+    Args:
+        func: The blocking function to execute
+        timeout: Timeout in seconds
+        *args, **kwargs: Arguments to pass to the function
+
+    Returns:
+        The function's return value
+
+    Raises:
+        asyncio.TimeoutError: If the function doesn't complete within timeout
+    """
+    loop = asyncio.get_event_loop()
+
+    if kwargs:
+        func = partial(func, **kwargs)
+
+    # Submit to executor and get Future
+    future: Future = _executor.submit(func, *args)
+
+    try:
+        # Wait with timeout using asyncio
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, future.result),
+            timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        # Cancel the future (won't stop running thread, but marks it as cancelled)
+        # The thread will continue until yt-dlp's socket_timeout kicks in
+        cancelled = future.cancel()
+        if not cancelled:
+            logger.warning(
+                f"Timeout after {timeout}s - thread will continue until yt-dlp's "
+                f"internal timeout (orphaned thread)"
+            )
+        raise
+
+
 @router.post("/info", response_model=VideoInfo, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 504: {"model": ErrorResponse}})
 async def get_info(request: URLRequest):
     """Get video information and available formats."""
     try:
-        info = await asyncio.wait_for(
-            run_in_executor(get_video_info, request.url),
-            timeout=INFO_EXTRACTION_TIMEOUT
+        info = await run_with_timeout(
+            get_video_info,
+            INFO_EXTRACTION_TIMEOUT,
+            request.url
         )
         return info
     except asyncio.TimeoutError:
-        logger.warning(f"Timeout extracting info for {request.url}")
+        logger.warning(
+            f"Timeout after {INFO_EXTRACTION_TIMEOUT}s extracting info for {request.url}. "
+            f"Note: Background thread may continue until yt-dlp's socket_timeout."
+        )
         raise HTTPException(
             status_code=504,
             detail="Video info extraction timed out. The video may be too long or the server is busy. Please try again."
@@ -103,7 +166,7 @@ async def get_info(request: URLRequest):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-@router.get("/download", responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+@router.get("/download", responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 504: {"model": ErrorResponse}})
 async def download(
     url: str = Query(..., description="Video URL"),
     format_id: str = Query("best", description="Format ID to download"),
@@ -113,8 +176,10 @@ async def download(
     try:
         # FastAPI already decodes query params - don't double-decode
         validated_url = validate_url(url)
-        filename, content_type, file_size, file_stream = await run_in_executor(
-            download_video, validated_url, format_id, audio_only
+        filename, content_type, file_size, file_stream = await run_with_timeout(
+            download_video,
+            DOWNLOAD_INIT_TIMEOUT,
+            validated_url, format_id, audio_only
         )
 
         # Sanitize filename for Content-Disposition header (RFC 5987)
@@ -131,6 +196,15 @@ async def download(
                 "Content-Length": str(file_size),
                 "Cache-Control": "no-cache",
             }
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"Timeout after {DOWNLOAD_INIT_TIMEOUT}s downloading {url}. "
+            f"Note: Background thread may continue until yt-dlp's socket_timeout."
+        )
+        raise HTTPException(
+            status_code=504,
+            detail="Download timed out. The video may be too large or the server is busy. Please try again."
         )
     except DownloadError as e:
         # Client error - download failed

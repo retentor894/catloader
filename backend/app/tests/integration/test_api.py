@@ -331,3 +331,73 @@ class TestDownloadEndpoint:
         )
 
         assert response.headers["Cache-Control"] == "no-cache"
+
+
+class TestTimeoutBehavior:
+    """Test timeout handling for long-running operations."""
+
+    @patch('app.routes.download.run_with_timeout')
+    def test_info_timeout_returns_504(self, mock_run_with_timeout, client):
+        """Should return 504 when video info extraction times out."""
+        import asyncio
+        mock_run_with_timeout.side_effect = asyncio.TimeoutError()
+
+        response = client.post(
+            "/api/info",
+            json={"url": "https://www.youtube.com/watch?v=verylongvideo"}
+        )
+
+        assert response.status_code == status.HTTP_504_GATEWAY_TIMEOUT
+        data = response.json()
+        assert "detail" in data
+        assert "timed out" in data["detail"].lower()
+
+    @patch('app.routes.download.run_with_timeout')
+    def test_download_timeout_returns_504(self, mock_run_with_timeout, client):
+        """Should return 504 when download times out."""
+        import asyncio
+        mock_run_with_timeout.side_effect = asyncio.TimeoutError()
+
+        response = client.get(
+            "/api/download",
+            params={"url": "https://www.youtube.com/watch?v=verylargefile"}
+        )
+
+        assert response.status_code == status.HTTP_504_GATEWAY_TIMEOUT
+        data = response.json()
+        assert "detail" in data
+        assert "timed out" in data["detail"].lower()
+
+    @patch('app.routes.download.run_with_timeout')
+    def test_info_timeout_error_message(self, mock_run_with_timeout, client):
+        """Should return helpful error message on info timeout."""
+        import asyncio
+        mock_run_with_timeout.side_effect = asyncio.TimeoutError()
+
+        response = client.post(
+            "/api/info",
+            json={"url": "https://test.com/video"}
+        )
+
+        assert response.status_code == status.HTTP_504_GATEWAY_TIMEOUT
+        data = response.json()
+        # Verify the message is helpful
+        assert "video" in data["detail"].lower() or "server" in data["detail"].lower()
+        assert "try again" in data["detail"].lower()
+
+    @patch('app.routes.download.run_with_timeout')
+    def test_download_timeout_error_message(self, mock_run_with_timeout, client):
+        """Should return helpful error message on download timeout."""
+        import asyncio
+        mock_run_with_timeout.side_effect = asyncio.TimeoutError()
+
+        response = client.get(
+            "/api/download",
+            params={"url": "https://test.com/video"}
+        )
+
+        assert response.status_code == status.HTTP_504_GATEWAY_TIMEOUT
+        data = response.json()
+        # Verify the message is helpful
+        assert "video" in data["detail"].lower() or "server" in data["detail"].lower() or "download" in data["detail"].lower()
+        assert "try again" in data["detail"].lower()
