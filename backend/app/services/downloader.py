@@ -25,7 +25,7 @@ from ..config import (
     YTDLP_USER_AGENT,
     PROGRESS_POLL_INTERVAL,
 )
-from ..utils import sanitize_for_log
+from ..utils import sanitize_for_log, sanitize_error_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -776,7 +776,9 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
     # Check for errors
     if download_error:
         cleanup_temp_dir(temp_dir)
-        yield f"data: {json.dumps({'status': 'error', 'message': download_error['error']})}\n\n"
+        # Sanitize error message to remove file paths and sensitive info
+        safe_error = sanitize_error_for_user(download_error['error'])
+        yield f"data: {json.dumps({'status': 'error', 'message': safe_error})}\n\n"
         return
 
     # Find downloaded file using robust logic that skips intermediate files

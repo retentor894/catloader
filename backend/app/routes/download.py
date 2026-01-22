@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import threading
 import time
 import uuid
@@ -32,7 +31,7 @@ from ..services.downloader import (
     cleanup_temp_dir,
     validate_content_type,
 )
-from ..utils import metrics, sanitize_for_log
+from ..utils import metrics, sanitize_for_log, sanitize_error_for_user
 from ..validation import validate_url as config_validate_url, validate_format_id, validate_download_id
 
 logger = logging.getLogger(__name__)
@@ -101,38 +100,6 @@ def _truncate_error(error: str, max_length: int = _METRICS_ERROR_MAX_LENGTH) -> 
         return error
     # Leave room for "..." suffix
     return error[:max_length - 3] + "..."
-
-
-def _sanitize_error_for_user(error: str) -> str:
-    """
-    Sanitize error message for user-facing responses.
-
-    Removes potentially sensitive information like:
-    - File system paths (could reveal server structure)
-    - Internal configuration details
-    - Stack traces
-
-    Args:
-        error: Original error message from exception
-
-    Returns:
-        Sanitized error message safe for users
-    """
-    sanitized = error
-
-    # Remove file paths (Unix and Windows style)
-    # Matches: /path/to/file, C:\path\to\file, /tmp/catloader_xxx/...
-    sanitized = re.sub(r'[/\\](?:tmp|var|home|usr|etc|catloader_)[^\s:\'\"]*', '[path]', sanitized)
-    sanitized = re.sub(r'[A-Za-z]:\\[^\s:\'\"]*', '[path]', sanitized)
-
-    # Remove temp directory references
-    sanitized = re.sub(r'catloader_[a-zA-Z0-9_]+', '[temp]', sanitized)
-
-    # Truncate to reasonable length
-    if len(sanitized) > 200:
-        sanitized = sanitized[:197] + "..."
-
-    return sanitized
 
 
 def _wrap_validator_for_http(validator: Callable[[str], str]) -> Callable[[str], str]:
@@ -432,17 +399,17 @@ async def get_info(request: URLRequest):
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="info_extraction", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Extraction error after {elapsed:.2f}s: {e}")
-        raise HTTPException(status_code=400, detail=_sanitize_error_for_user(str(e)))
+        raise HTTPException(status_code=400, detail=sanitize_error_for_user(str(e)))
     except NetworkError as e:
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="info_extraction", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Network error after {elapsed:.2f}s: {e}")
-        raise HTTPException(status_code=503, detail=_sanitize_error_for_user(str(e)))
+        raise HTTPException(status_code=503, detail=sanitize_error_for_user(str(e)))
     except CatLoaderError as e:
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="info_extraction", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Application error after {elapsed:.2f}s: {e}")
-        raise HTTPException(status_code=400, detail=_sanitize_error_for_user(str(e)))
+        raise HTTPException(status_code=400, detail=sanitize_error_for_user(str(e)))
     except Exception as e:
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="info_extraction", error=_truncate_error(str(e)), elapsed=elapsed)
@@ -525,17 +492,17 @@ async def download(
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="download", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Download error after {elapsed:.2f}s: {e}")
-        raise HTTPException(status_code=400, detail=_sanitize_error_for_user(str(e)))
+        raise HTTPException(status_code=400, detail=sanitize_error_for_user(str(e)))
     except NetworkError as e:
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="download", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Network error after {elapsed:.2f}s: {e}")
-        raise HTTPException(status_code=503, detail=_sanitize_error_for_user(str(e)))
+        raise HTTPException(status_code=503, detail=sanitize_error_for_user(str(e)))
     except CatLoaderError as e:
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="download", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Application error after {elapsed:.2f}s: {e}")
-        raise HTTPException(status_code=400, detail=_sanitize_error_for_user(str(e)))
+        raise HTTPException(status_code=400, detail=sanitize_error_for_user(str(e)))
     except Exception as e:
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="download", error=_truncate_error(str(e)), elapsed=elapsed)
@@ -602,13 +569,13 @@ async def download_progress(
             elapsed = time.monotonic() - start_time
             logger.warning(f"Network error in download progress stream: {e}")
             metrics.record_error(operation="download_progress", error=_truncate_error(str(e)), elapsed=elapsed)
-            yield f"data: {json.dumps({'status': 'error', 'error_type': 'network', 'message': _sanitize_error_for_user(str(e)), 'retryable': True})}\n\n"
+            yield f"data: {json.dumps({'status': 'error', 'error_type': 'network', 'message': sanitize_error_for_user(str(e)), 'retryable': True})}\n\n"
         except (DownloadError, CatLoaderError) as e:
             # Permanent errors - no point retrying
             elapsed = time.monotonic() - start_time
             logger.warning(f"Download error in progress stream: {e}")
             metrics.record_error(operation="download_progress", error=_truncate_error(str(e)), elapsed=elapsed)
-            yield f"data: {json.dumps({'status': 'error', 'error_type': 'download', 'message': _sanitize_error_for_user(str(e)), 'retryable': False})}\n\n"
+            yield f"data: {json.dumps({'status': 'error', 'error_type': 'download', 'message': sanitize_error_for_user(str(e)), 'retryable': False})}\n\n"
         except Exception as e:
             # Unknown errors - log full traceback, use generic message for user
             elapsed = time.monotonic() - start_time

@@ -4,6 +4,7 @@ Utility functions for metrics collection, logging, and backoff calculation.
 This module provides:
 - Metrics: Thread-safe metrics collector for observability
 - sanitize_for_log: Sanitize user data for safe logging
+- sanitize_error_for_user: Sanitize error messages for user-facing responses
 - calculate_backoff_delay: Exponential backoff calculation
 - RETRYABLE_EXCEPTIONS: Tuple of exceptions that indicate transient errors
 
@@ -13,6 +14,7 @@ kept for potential future use and as general-purpose utilities.
 """
 
 import logging
+import re
 import threading
 from typing import Type, Tuple
 
@@ -133,6 +135,38 @@ def sanitize_for_log(value: str, max_length: int = 200) -> str:
     # Truncate if too long
     if len(sanitized) > max_length:
         sanitized = sanitized[:max_length - 3] + "..."
+    return sanitized
+
+
+def sanitize_error_for_user(error: str) -> str:
+    """
+    Sanitize error message for user-facing responses.
+
+    Removes potentially sensitive information like:
+    - File system paths (could reveal server structure)
+    - Internal configuration details
+    - Temp directory names
+
+    Args:
+        error: Original error message from exception
+
+    Returns:
+        Sanitized error message safe for users
+    """
+    sanitized = error
+
+    # Remove file paths (Unix and Windows style)
+    # Matches: /path/to/file, C:\path\to\file, /tmp/catloader_xxx/...
+    sanitized = re.sub(r'[/\\](?:tmp|var|home|usr|etc|catloader_)[^\s:\'\"]*', '[path]', sanitized)
+    sanitized = re.sub(r'[A-Za-z]:\\[^\s:\'\"]*', '[path]', sanitized)
+
+    # Remove temp directory references
+    sanitized = re.sub(r'catloader_[a-zA-Z0-9_]+', '[temp]', sanitized)
+
+    # Truncate to reasonable length
+    if len(sanitized) > 200:
+        sanitized = sanitized[:197] + "..."
+
     return sanitized
 
 
