@@ -398,7 +398,8 @@ def _configure_format_options(ydl_opts: Dict[str, Any], format_id: str, audio_on
         ydl_opts['postprocessors'] = [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
-            'preferredquality': '192',
+            # 320 kbps is the maximum quality for MP3
+            'preferredquality': '320',
         }]
     else:
         if format_id and format_id != 'best':
