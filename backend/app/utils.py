@@ -1,8 +1,9 @@
 """
-Utility functions for metrics collection and backoff calculation.
+Utility functions for metrics collection, logging, and backoff calculation.
 
 This module provides:
 - Metrics: Thread-safe metrics collector for observability
+- sanitize_for_log: Sanitize user data for safe logging
 - calculate_backoff_delay: Exponential backoff calculation
 - RETRYABLE_EXCEPTIONS: Tuple of exceptions that indicate transient errors
 
@@ -103,6 +104,36 @@ class Metrics:
 
 # Global metrics instance
 metrics = Metrics()
+
+
+# =============================================================================
+# Logging Utilities
+# =============================================================================
+
+def sanitize_for_log(value: str, max_length: int = 200) -> str:
+    """
+    Sanitize user-controlled data for safe logging.
+
+    Prevents log injection attacks by removing/escaping:
+    - Newlines (could create fake log entries)
+    - Carriage returns (same)
+    - ANSI escape codes (could corrupt terminals/log viewers)
+
+    Args:
+        value: User-controlled string to sanitize
+        max_length: Maximum length to prevent log bloat
+
+    Returns:
+        Sanitized string safe for logging
+    """
+    # Remove newlines and carriage returns
+    sanitized = value.replace('\n', '\\n').replace('\r', '\\r')
+    # Remove ANSI escape sequences (CSI sequences start with ESC[)
+    sanitized = sanitized.replace('\x1b', '\\x1b')
+    # Truncate if too long
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length - 3] + "..."
+    return sanitized
 
 
 # =============================================================================

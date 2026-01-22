@@ -25,14 +25,9 @@ from ..config import (
     YTDLP_USER_AGENT,
     PROGRESS_POLL_INTERVAL,
 )
+from ..utils import sanitize_for_log
 
 logger = logging.getLogger(__name__)
-
-
-def _sanitize_for_log(value: str, max_length: int = 200) -> str:
-    """Sanitize user-controlled data for safe logging."""
-    sanitized = value.replace('\n', '\\n').replace('\r', '\\r').replace('\x1b', '\\x1b')
-    return sanitized[:max_length - 3] + "..." if len(sanitized) > max_length else sanitized
 
 
 # =============================================================================
@@ -67,6 +62,7 @@ class DownloadResult(NamedTuple):
     content_type: str
     file_size: int
     stream: Generator[bytes, None, None]
+
 
 # =============================================================================
 # Local Constants (not configurable via environment)
@@ -134,6 +130,7 @@ def find_downloaded_file(temp_dir: str) -> Optional[str]:
 
     Scans the directory looking for final output files, avoiding intermediate
     files that yt-dlp creates during processing (like .part, .temp files).
+    Uses a single pass with preference for expected extensions.
 
     Args:
         temp_dir: Path to the temporary directory to scan.
@@ -141,23 +138,24 @@ def find_downloaded_file(temp_dir: str) -> Optional[str]:
     Returns:
         Path to the downloaded file, or None if not found.
     """
-    # First pass: look for files with expected extensions (preferred)
+    fallback_file = None
+
     for file in os.listdir(temp_dir):
         file_path = os.path.join(temp_dir, file)
-        if os.path.isfile(file_path):
-            ext = os.path.splitext(file)[1].lower()
-            if ext in _EXPECTED_EXTENSIONS:
-                return file_path
+        if not os.path.isfile(file_path):
+            continue
 
-    # Second pass: accept any non-intermediate file
-    for file in os.listdir(temp_dir):
-        file_path = os.path.join(temp_dir, file)
-        if os.path.isfile(file_path):
-            ext = os.path.splitext(file)[1].lower()
-            if ext not in _SKIP_EXTENSIONS:
-                return file_path
+        ext = os.path.splitext(file)[1].lower()
 
-    return None
+        # Prefer files with expected extensions (return immediately)
+        if ext in _EXPECTED_EXTENSIONS:
+            return file_path
+
+        # Track non-intermediate files as fallback
+        if ext not in _SKIP_EXTENSIONS and fallback_file is None:
+            fallback_file = file_path
+
+    return fallback_file
 
 
 # =============================================================================
@@ -363,16 +361,22 @@ def remove_completed_download(download_id: str) -> Optional[Dict[str, Any]]:
 #    - Implementing request queuing with rate limiting
 #    - Using a connection-pooling HTTP proxy (squid, nginx)
 #
-# Common options to avoid 403 errors
+# Common yt-dlp options used by all download operations
 COMMON_OPTS = {
+    # Suppress stdout output (we use progress hooks instead)
     'quiet': True,
+    # Suppress warning messages to stderr
     'no_warnings': True,
+    # Browser-like headers to avoid 403 Forbidden errors from video sites
     'http_headers': {
         'User-Agent': YTDLP_USER_AGENT,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-us,en;q=0.5',
     },
+    # Per-socket timeout - limits individual HTTP operations, helps terminate
+    # orphaned threads after asyncio timeout
     'socket_timeout': YTDLP_SOCKET_TIMEOUT,
+    # Internal retry count for transient network errors
     'retries': 3,
 }
 
@@ -424,7 +428,7 @@ def get_video_info(url: str) -> VideoInfo:
             raise VideoExtractionError(f"Could not extract video information: {e}") from e
     except (OSError, ConnectionError, TimeoutError) as e:
         # Known transient errors - wrap as NetworkError for retry
-        logger.warning(f"Transient error extracting video info for {_sanitize_for_log(url)}: {e}")
+        logger.warning(f"Transient error extracting video info for {sanitize_for_log(url)}: {e}")
         raise NetworkError(f"Network error: {e}") from e
     except Exception as e:
         # Unknown errors - log and re-raise without wrapping as transient
@@ -589,7 +593,7 @@ def download_video(url: str, format_id: str, audio_only: bool = False) -> Downlo
     except (OSError, ConnectionError, TimeoutError) as e:
         # Known transient errors - wrap as NetworkError for retry
         cleanup_temp_dir(temp_dir)
-        logger.warning(f"Transient error downloading {_sanitize_for_log(url)}: {e}")
+        logger.warning(f"Transient error downloading {sanitize_for_log(url)}: {e}")
         raise NetworkError(f"Network error during download: {e}") from e
     except Exception as e:
         # Unknown errors - log and re-raise without wrapping as transient
@@ -759,7 +763,7 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
         # Client disconnected - signal cancellation and cleanup
         client_disconnected = True
         cancelled.set()
-        logger.info(f"Client disconnected, cancelling download for {_sanitize_for_log(url)}")
+        logger.info(f"Client disconnected, cancelling download for {sanitize_for_log(url)}")
     finally:
         if client_disconnected:
             # Wait briefly for thread to notice cancellation

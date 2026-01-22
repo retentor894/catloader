@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -31,7 +32,7 @@ from ..services.downloader import (
     cleanup_temp_dir,
     validate_content_type,
 )
-from ..utils import metrics
+from ..utils import metrics, sanitize_for_log
 from ..validation import validate_url as config_validate_url, validate_format_id, validate_download_id
 
 logger = logging.getLogger(__name__)
@@ -102,32 +103,6 @@ def _truncate_error(error: str, max_length: int = _METRICS_ERROR_MAX_LENGTH) -> 
     return error[:max_length - 3] + "..."
 
 
-def _sanitize_for_log(value: str, max_length: int = 200) -> str:
-    """
-    Sanitize user-controlled data for safe logging.
-
-    Prevents log injection attacks by removing/escaping:
-    - Newlines (could create fake log entries)
-    - Carriage returns (same)
-    - ANSI escape codes (could corrupt terminals/log viewers)
-
-    Args:
-        value: User-controlled string to sanitize
-        max_length: Maximum length to prevent log bloat
-
-    Returns:
-        Sanitized string safe for logging
-    """
-    # Remove newlines and carriage returns
-    sanitized = value.replace('\n', '\\n').replace('\r', '\\r')
-    # Remove ANSI escape sequences (CSI sequences start with ESC[)
-    sanitized = sanitized.replace('\x1b', '\\x1b')
-    # Truncate if too long
-    if len(sanitized) > max_length:
-        sanitized = sanitized[:max_length - 3] + "..."
-    return sanitized
-
-
 def _sanitize_error_for_user(error: str) -> str:
     """
     Sanitize error message for user-facing responses.
@@ -143,7 +118,6 @@ def _sanitize_error_for_user(error: str) -> str:
     Returns:
         Sanitized error message safe for users
     """
-    import re
     sanitized = error
 
     # Remove file paths (Unix and Windows style)
@@ -161,43 +135,32 @@ def _sanitize_error_for_user(error: str) -> str:
     return sanitized
 
 
-def validate_url_for_http(url: str) -> str:
+def _wrap_validator_for_http(validator: Callable[[str], str]) -> Callable[[str], str]:
     """
-    Validate URL and convert ValueError to HTTPException.
+    Wrap a validator function to convert ValueError to HTTPException.
 
-    This is a thin wrapper around config.validate_url that converts
-    ValueError exceptions to HTTPException for use in HTTP handlers.
+    This factory creates HTTP-compatible wrappers for validation functions
+    that raise ValueError on invalid input.
+
+    Args:
+        validator: A function that takes a string and returns validated string,
+                   raising ValueError on invalid input.
+
+    Returns:
+        Wrapped function that raises HTTPException(400) instead of ValueError.
     """
-    try:
-        return config_validate_url(url)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    def wrapped(value: str) -> str:
+        try:
+            return validator(value)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    return wrapped
 
 
-def validate_format_id_for_http(format_id: str) -> str:
-    """
-    Validate format_id and convert ValueError to HTTPException.
-
-    This validates yt-dlp format strings to prevent injection of
-    unexpected characters.
-    """
-    try:
-        return validate_format_id(format_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-def validate_download_id_for_http(download_id: str) -> str:
-    """
-    Validate download_id and convert ValueError to HTTPException.
-
-    This validates download IDs to ensure they match the expected format
-    (URL-safe base64 from secrets.token_urlsafe).
-    """
-    try:
-        return validate_download_id(download_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+# HTTP-compatible validation wrappers
+validate_url_for_http = _wrap_validator_for_http(config_validate_url)
+validate_format_id_for_http = _wrap_validator_for_http(validate_format_id)
+validate_download_id_for_http = _wrap_validator_for_http(validate_download_id)
 
 
 # Reserved filenames on Windows (case-insensitive)
@@ -436,7 +399,7 @@ async def get_info(request: URLRequest):
     request_id = _generate_request_id()
     start_time = time.monotonic()
 
-    logger.info(f"[{request_id}] Starting info extraction for: {_sanitize_for_log(request.url)}")
+    logger.info(f"[{request_id}] Starting info extraction for: {sanitize_for_log(request.url)}")
 
     try:
         # Note: No retry at endpoint level to avoid multiplying timeout
@@ -501,7 +464,7 @@ async def download(
     validated_url = validate_url_for_http(url)
     validated_format_id = validate_format_id_for_http(format_id)
 
-    logger.info(f"[{request_id}] Starting download for: {_sanitize_for_log(validated_url)} (format={validated_format_id}, audio_only={audio_only})")
+    logger.info(f"[{request_id}] Starting download for: {sanitize_for_log(validated_url)} (format={validated_format_id}, audio_only={audio_only})")
 
     file_stream = None
     try:
@@ -623,7 +586,7 @@ async def download_progress(
                 # Check if connection has exceeded maximum allowed time
                 elapsed = time.monotonic() - start_time
                 if elapsed > SSE_STREAM_TIMEOUT:
-                    logger.warning(f"SSE stream timeout after {elapsed:.0f}s for {_sanitize_for_log(validated_url)}")
+                    logger.warning(f"SSE stream timeout after {elapsed:.0f}s for {sanitize_for_log(validated_url)}")
                     yield f"data: {json.dumps({'status': 'error', 'error_type': 'timeout', 'message': 'Connection timeout', 'retryable': True})}\n\n"
                     return
                 yield event
