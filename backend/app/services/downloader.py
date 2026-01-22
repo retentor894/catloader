@@ -93,10 +93,33 @@ CONTENT_TYPES = {
     '.ogg': 'audio/ogg',
 }
 
+# Whitelist of safe content types for streaming responses
+# Only these types are served; anything else becomes application/octet-stream
+_SAFE_CONTENT_TYPES = frozenset(CONTENT_TYPES.values())
+
 
 def get_content_type(ext: str) -> str:
     """Get content type for file extension."""
     return CONTENT_TYPES.get(ext.lower(), 'application/octet-stream')
+
+
+def validate_content_type(content_type: str) -> str:
+    """
+    Validate content type is in whitelist of safe types.
+
+    This prevents serving unexpected content types that could be used
+    for XSS or content-sniffing attacks if a malicious site manipulates
+    yt-dlp's output metadata.
+
+    Args:
+        content_type: Content type to validate
+
+    Returns:
+        The original content_type if safe, otherwise 'application/octet-stream'
+    """
+    if content_type in _SAFE_CONTENT_TYPES:
+        return content_type
+    return 'application/octet-stream'
 
 
 # Expected final file extensions from yt-dlp downloads
@@ -235,8 +258,31 @@ _start_cleanup_thread()
 atexit.register(_shutdown_cleanup_thread)
 
 
+_REQUIRED_DOWNLOAD_FIELDS = frozenset(['file_path', 'temp_dir', 'filename', 'file_size', 'content_type'])
+
+
 def store_completed_download(file_info: Dict[str, Any]) -> str:
-    """Store completed download info and return download ID."""
+    """Store completed download info and return download ID.
+
+    Args:
+        file_info: Dictionary containing download metadata. Required fields:
+            - file_path: Path to the downloaded file
+            - temp_dir: Temporary directory containing the file
+            - filename: Original filename
+            - file_size: File size in bytes
+            - content_type: MIME type of the file
+
+    Returns:
+        Download ID that can be used to retrieve the file
+
+    Raises:
+        ValueError: If required fields are missing from file_info
+    """
+    # Validate required fields
+    missing = _REQUIRED_DOWNLOAD_FIELDS - file_info.keys()
+    if missing:
+        raise ValueError(f"Missing required fields in file_info: {', '.join(sorted(missing))}")
+
     # Use cryptographically secure token
     download_id = secrets.token_urlsafe(DOWNLOAD_ID_BYTES)
 

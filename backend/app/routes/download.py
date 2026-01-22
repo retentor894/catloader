@@ -29,6 +29,7 @@ from ..services.downloader import (
     download_video_with_progress,
     remove_completed_download,
     cleanup_temp_dir,
+    validate_content_type,
 )
 from ..utils import metrics
 from ..validation import validate_url as config_validate_url, validate_format_id, validate_download_id
@@ -124,6 +125,39 @@ def _sanitize_for_log(value: str, max_length: int = 200) -> str:
     # Truncate if too long
     if len(sanitized) > max_length:
         sanitized = sanitized[:max_length - 3] + "..."
+    return sanitized
+
+
+def _sanitize_error_for_user(error: str) -> str:
+    """
+    Sanitize error message for user-facing responses.
+
+    Removes potentially sensitive information like:
+    - File system paths (could reveal server structure)
+    - Internal configuration details
+    - Stack traces
+
+    Args:
+        error: Original error message from exception
+
+    Returns:
+        Sanitized error message safe for users
+    """
+    import re
+    sanitized = error
+
+    # Remove file paths (Unix and Windows style)
+    # Matches: /path/to/file, C:\path\to\file, /tmp/catloader_xxx/...
+    sanitized = re.sub(r'[/\\](?:tmp|var|home|usr|etc|catloader_)[^\s:\'\"]*', '[path]', sanitized)
+    sanitized = re.sub(r'[A-Za-z]:\\[^\s:\'\"]*', '[path]', sanitized)
+
+    # Remove temp directory references
+    sanitized = re.sub(r'catloader_[a-zA-Z0-9_]+', '[temp]', sanitized)
+
+    # Truncate to reasonable length
+    if len(sanitized) > 200:
+        sanitized = sanitized[:197] + "..."
+
     return sanitized
 
 
@@ -359,6 +393,11 @@ async def run_with_timeout(
         asyncio.TimeoutError: If the function doesn't complete within timeout
         ServerAtCapacityError: If max concurrent operations limit is reached
     """
+    # Prepare partial function before acquiring semaphore
+    # This ensures semaphore isn't held if partial() fails
+    if kwargs:
+        func = partial(func, **kwargs)
+
     # Try to acquire semaphore with minimal wait
     # If server is at capacity, fail fast instead of queueing
     semaphore = _get_semaphore()
@@ -370,9 +409,6 @@ async def run_with_timeout(
         )
 
     loop = asyncio.get_running_loop()
-
-    if kwargs:
-        func = partial(func, **kwargs)
 
     try:
         # Run directly in our executor with timeout
@@ -433,17 +469,17 @@ async def get_info(request: URLRequest):
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="info_extraction", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Extraction error after {elapsed:.2f}s: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=_sanitize_error_for_user(str(e)))
     except NetworkError as e:
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="info_extraction", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Network error after {elapsed:.2f}s: {e}")
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail=_sanitize_error_for_user(str(e)))
     except CatLoaderError as e:
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="info_extraction", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Application error after {elapsed:.2f}s: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=_sanitize_error_for_user(str(e)))
     except Exception as e:
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="info_extraction", error=_truncate_error(str(e)), elapsed=elapsed)
@@ -520,22 +556,23 @@ async def download(
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="download", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] File size limit exceeded after {elapsed:.2f}s: {e}")
+        # FileSizeLimitError message is safe (just size numbers)
         raise HTTPException(status_code=413, detail=str(e))
     except DownloadError as e:
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="download", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Download error after {elapsed:.2f}s: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=_sanitize_error_for_user(str(e)))
     except NetworkError as e:
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="download", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Network error after {elapsed:.2f}s: {e}")
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail=_sanitize_error_for_user(str(e)))
     except CatLoaderError as e:
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="download", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.warning(f"[{request_id}] Application error after {elapsed:.2f}s: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=_sanitize_error_for_user(str(e)))
     except Exception as e:
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="download", error=_truncate_error(str(e)), elapsed=elapsed)
@@ -590,24 +627,31 @@ async def download_progress(
                     yield f"data: {json.dumps({'status': 'error', 'error_type': 'timeout', 'message': 'Connection timeout', 'retryable': True})}\n\n"
                     return
                 yield event
+        except FileSizeLimitError as e:
+            # File too large - not retryable
+            elapsed = time.monotonic() - start_time
+            logger.warning(f"File size limit exceeded in progress stream: {e}")
+            metrics.record_error(operation="download_progress", error=_truncate_error(str(e)), elapsed=elapsed)
+            # FileSizeLimitError message is safe (just size numbers)
+            yield f"data: {json.dumps({'status': 'error', 'error_type': 'file_size', 'message': str(e), 'retryable': False})}\n\n"
         except NetworkError as e:
             # Transient network errors - client can retry
             elapsed = time.monotonic() - start_time
             logger.warning(f"Network error in download progress stream: {e}")
             metrics.record_error(operation="download_progress", error=_truncate_error(str(e)), elapsed=elapsed)
-            yield f"data: {json.dumps({'status': 'error', 'error_type': 'network', 'message': str(e), 'retryable': True})}\n\n"
+            yield f"data: {json.dumps({'status': 'error', 'error_type': 'network', 'message': _sanitize_error_for_user(str(e)), 'retryable': True})}\n\n"
         except (DownloadError, CatLoaderError) as e:
             # Permanent errors - no point retrying
             elapsed = time.monotonic() - start_time
             logger.warning(f"Download error in progress stream: {e}")
             metrics.record_error(operation="download_progress", error=_truncate_error(str(e)), elapsed=elapsed)
-            yield f"data: {json.dumps({'status': 'error', 'error_type': 'download', 'message': str(e), 'retryable': False})}\n\n"
+            yield f"data: {json.dumps({'status': 'error', 'error_type': 'download', 'message': _sanitize_error_for_user(str(e)), 'retryable': False})}\n\n"
         except Exception as e:
-            # Unknown errors - log full traceback, assume not retryable
+            # Unknown errors - log full traceback, use generic message for user
             elapsed = time.monotonic() - start_time
             logger.exception(f"Unexpected error in download progress stream: {e}")
             metrics.record_error(operation="download_progress", error=_truncate_error(str(e)), elapsed=elapsed)
-            yield f"data: {json.dumps({'status': 'error', 'error_type': 'internal', 'message': str(e), 'retryable': False})}\n\n"
+            yield f"data: {json.dumps({'status': 'error', 'error_type': 'internal', 'message': 'Internal server error', 'retryable': False})}\n\n"
         # Note: Semaphore release is handled by SemaphoreGuardedIterator.close()
         # This guarantees release even if client disconnects before iteration starts
 
@@ -696,9 +740,14 @@ async def download_file(download_id: str):
         finally:
             cleanup_temp_dir(temp_dir)
 
+    # Validate content type to prevent serving unexpected types
+    safe_content_type = validate_content_type(
+        file_info.get('content_type', 'application/octet-stream')
+    )
+
     return StreamingResponse(
         file_generator(),
-        media_type=file_info.get('content_type', 'application/octet-stream'),
+        media_type=safe_content_type,
         headers={
             "Content-Disposition": f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{encoded_filename}',
             "Content-Length": str(file_size),
