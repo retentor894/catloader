@@ -398,7 +398,8 @@ def _configure_format_options(ydl_opts: Dict[str, Any], format_id: str, audio_on
         ydl_opts['postprocessors'] = [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
-            'preferredquality': '192',
+            # 320 kbps is the maximum quality for MP3
+            'preferredquality': '320',
         }]
     else:
         if format_id and format_id != 'best':
@@ -679,6 +680,24 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
     cancelled = threading.Event()
     download_error: Dict[str, Any] = {}
 
+    # Lock to protect shared mutable state accessed from both the main thread
+    # (SSE loop) and the download thread (progress/postprocessor hooks)
+    state_lock = threading.Lock()
+
+    # Track conversion state for elapsed time updates
+    # Protected by state_lock
+    conversion_state: Dict[str, Any] = {
+        'active': False,
+        'start_time': 0.0,
+        'message': 'Processing...',
+    }
+
+    # Track download mode (audio-only vs video+audio)
+    # Protected by state_lock
+    download_state: Dict[str, Any] = {
+        'is_audio_only': audio_only,
+    }
+
     def progress_hook(d: ProgressHookData) -> None:
         """Hook called by yt-dlp with download progress."""
         # Check if cancelled
@@ -696,6 +715,25 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
             else:
                 percent = 0
 
+            # Determine phase label for video+audio downloads
+            # Detect stream type from filename instead of assuming order
+            with state_lock:
+                is_audio_only = download_state['is_audio_only']
+
+            if is_audio_only:
+                phase = 'audio'
+            else:
+                # Check filename to determine if this is video or audio stream
+                # yt-dlp temp files often have format indicators in the name
+                filename = d.get('tmpfilename') or d.get('filename') or ''
+                filename_lower = filename.lower()
+                # Audio stream indicators: common audio extensions and format patterns
+                audio_indicators = ('.m4a', '.opus', '.ogg', '.aac', '.webm.part', 'f140', 'audio')
+                if any(ind in filename_lower for ind in audio_indicators):
+                    phase = 'audio'
+                else:
+                    phase = 'video'
+
             progress_queue.put({
                 'status': 'downloading',
                 'percent': round(percent, 1),
@@ -703,12 +741,13 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
                 'total': total,
                 'speed': speed,
                 'eta': eta,
+                'phase': phase,
             })
         elif d['status'] == 'finished':
             progress_queue.put({
                 'status': 'processing',
                 'percent': 100,
-                'message': 'Processing file...',
+                'message': 'Processing...',
             })
 
     def postprocessor_hook(d: PostprocessorHookData) -> None:
@@ -716,12 +755,45 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
         if cancelled.is_set():
             raise Exception("Download cancelled by client")
 
-        if d['status'] == 'started':
+        status = d.get('status', '')
+        postprocessor = d.get('postprocessor', 'unknown')
+
+        if status == 'started':
+            # Show which postprocessor is running
+            # Check Merge first since FFmpegMerger contains 'FFmpeg'
+            if 'Merge' in postprocessor:
+                message = 'Merging audio and video'
+            elif 'ExtractAudio' in postprocessor:
+                # FFmpegExtractAudio - converting to audio format (MP3 in our config)
+                message = 'Converting to MP3'
+            elif 'FFmpeg' in postprocessor:
+                message = 'Processing audio'
+            else:
+                message = f'Processing ({postprocessor})'
+
+            # Track conversion start for elapsed time updates
+            with state_lock:
+                conversion_state['active'] = True
+                conversion_state['start_time'] = time.time()
+                conversion_state['message'] = message
+
+            progress_queue.put({
+                'status': 'converting',
+                'percent': 100,
+                'message': f'{message}...',
+                'elapsed': 0,
+            })
+            logger.debug(f"Postprocessor started: {postprocessor}")
+
+        elif status == 'finished':
+            with state_lock:
+                conversion_state['active'] = False
             progress_queue.put({
                 'status': 'processing',
                 'percent': 100,
-                'message': 'Converting...',
+                'message': 'Finalizing...',
             })
+            logger.debug(f"Postprocessor finished: {postprocessor}")
 
     def download_thread() -> None:
         """Run download in separate thread to not block SSE."""
@@ -735,14 +807,18 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
         }
         _configure_format_options(ydl_opts, format_id, audio_only)
 
+        logger.debug(f"Starting download thread for {sanitize_for_log(url)}")
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.extract_info(url, download=True)
+            logger.debug(f"Download completed successfully for {sanitize_for_log(url)}")
         except Exception as e:
             if not cancelled.is_set():
                 download_error['error'] = str(e)
+                logger.warning(f"Download thread error: {e}")
         finally:
             download_complete.set()
+            logger.debug("Download thread finished, signaled completion")
 
     # Start download in background thread (daemon for clean shutdown)
     thread = threading.Thread(target=download_thread, daemon=True)
@@ -756,9 +832,27 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
                 progress = progress_queue.get(timeout=PROGRESS_POLL_INTERVAL)
                 yield f"data: {json.dumps(progress)}\n\n"
             except queue.Empty:
-                # Send heartbeat to keep connection alive
+                # Send updates to keep connection alive
                 if not download_complete.is_set():
-                    yield f"data: {json.dumps({'status': 'waiting'})}\n\n"
+                    # Read shared state under lock
+                    with state_lock:
+                        is_converting = conversion_state['active']
+                        conv_start_time = conversion_state['start_time']
+                        conv_message = conversion_state['message']
+
+                    if is_converting:
+                        # During conversion, show elapsed time so user knows it's working
+                        elapsed = int(time.time() - conv_start_time)
+                        minutes, seconds = divmod(elapsed, 60)
+                        if minutes > 0:
+                            elapsed_str = f"{minutes}m {seconds}s"
+                        else:
+                            elapsed_str = f"{seconds}s"
+                        message = f"{conv_message}... ({elapsed_str})"
+                        event_data = {'status': 'converting', 'percent': 100, 'message': message, 'elapsed': elapsed}
+                        yield f"data: {json.dumps(event_data)}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'status': 'waiting'})}\n\n"
     except GeneratorExit:
         # Client disconnected - signal cancellation and cleanup
         client_disconnected = True

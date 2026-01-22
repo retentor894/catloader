@@ -155,7 +155,11 @@ function downloadFile(formatId, audioOnly, container) {
             case 'downloading':
                 const percent = data.percent || 0;
                 progressFill.style.width = `${percent}%`;
-                btn.textContent = `${percent.toFixed(1)}%`;
+
+                // Show phase (video/audio) for combined downloads
+                const phaseLabel = data.phase === 'video' ? 'Video' :
+                                   data.phase === 'audio' ? 'Audio' : '';
+                btn.textContent = phaseLabel ? `${phaseLabel}: ${percent.toFixed(1)}%` : `${percent.toFixed(1)}%`;
 
                 let statusText = '';
                 if (data.speed) {
@@ -171,6 +175,18 @@ function downloadFile(formatId, audioOnly, container) {
                 progressFill.style.width = '100%';
                 btn.textContent = data.message || 'Processing...';
                 progressText.textContent = '';
+                break;
+
+            case 'converting':
+                // Long-running conversion (e.g., MP3 for long videos)
+                progressFill.style.width = '100%';
+                btn.textContent = data.message || 'Converting...';
+                // Show elapsed time to indicate progress is happening
+                if (data.elapsed) {
+                    progressText.textContent = 'Please wait, this may take a few minutes for long videos';
+                } else {
+                    progressText.textContent = '';
+                }
                 break;
 
             case 'complete':
