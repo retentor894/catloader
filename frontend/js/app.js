@@ -173,6 +173,18 @@ function downloadFile(formatId, audioOnly, container) {
                 progressText.textContent = '';
                 break;
 
+            case 'converting':
+                // Long-running conversion (e.g., MP3 for long videos)
+                progressFill.style.width = '100%';
+                btn.textContent = data.message || 'Converting...';
+                // Show elapsed time to indicate progress is happening
+                if (data.elapsed) {
+                    progressText.textContent = 'Please wait, this may take a few minutes for long videos';
+                } else {
+                    progressText.textContent = '';
+                }
+                break;
+
             case 'complete':
                 eventSource.close();
                 btn.textContent = 'Done!';

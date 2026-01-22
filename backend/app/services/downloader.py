@@ -679,6 +679,13 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
     cancelled = threading.Event()
     download_error: Dict[str, Any] = {}
 
+    # Track conversion state for elapsed time updates
+    conversion_state: Dict[str, Any] = {
+        'active': False,
+        'start_time': 0.0,
+        'message': 'Processing...',
+    }
+
     def progress_hook(d: ProgressHookData) -> None:
         """Hook called by yt-dlp with download progress."""
         # Check if cancelled
@@ -716,12 +723,39 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
         if cancelled.is_set():
             raise Exception("Download cancelled by client")
 
-        if d['status'] == 'started':
+        status = d.get('status', '')
+        postprocessor = d.get('postprocessor', 'unknown')
+
+        if status == 'started':
+            # Show which postprocessor is running
+            if 'FFmpeg' in postprocessor or 'Extract' in postprocessor:
+                message = 'Converting to MP3'
+            elif 'Merge' in postprocessor:
+                message = 'Merging audio and video'
+            else:
+                message = f'Processing ({postprocessor})'
+
+            # Track conversion start for elapsed time updates
+            conversion_state['active'] = True
+            conversion_state['start_time'] = time.time()
+            conversion_state['message'] = message
+
+            progress_queue.put({
+                'status': 'converting',
+                'percent': 100,
+                'message': f'{message}...',
+                'elapsed': 0,
+            })
+            logger.debug(f"Postprocessor started: {postprocessor}")
+
+        elif status == 'finished':
+            conversion_state['active'] = False
             progress_queue.put({
                 'status': 'processing',
                 'percent': 100,
-                'message': 'Converting...',
+                'message': 'Finalizing...',
             })
+            logger.debug(f"Postprocessor finished: {postprocessor}")
 
     def download_thread() -> None:
         """Run download in separate thread to not block SSE."""
@@ -735,14 +769,18 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
         }
         _configure_format_options(ydl_opts, format_id, audio_only)
 
+        logger.debug(f"Starting download thread for {sanitize_for_log(url)}")
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.extract_info(url, download=True)
+            logger.debug(f"Download completed successfully for {sanitize_for_log(url)}")
         except Exception as e:
             if not cancelled.is_set():
                 download_error['error'] = str(e)
+                logger.warning(f"Download thread error: {e}")
         finally:
             download_complete.set()
+            logger.debug("Download thread finished, signaled completion")
 
     # Start download in background thread (daemon for clean shutdown)
     thread = threading.Thread(target=download_thread, daemon=True)
@@ -756,9 +794,21 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
                 progress = progress_queue.get(timeout=PROGRESS_POLL_INTERVAL)
                 yield f"data: {json.dumps(progress)}\n\n"
             except queue.Empty:
-                # Send heartbeat to keep connection alive
+                # Send updates to keep connection alive
                 if not download_complete.is_set():
-                    yield f"data: {json.dumps({'status': 'waiting'})}\n\n"
+                    if conversion_state['active']:
+                        # During conversion, show elapsed time so user knows it's working
+                        elapsed = int(time.time() - conversion_state['start_time'])
+                        minutes, seconds = divmod(elapsed, 60)
+                        if minutes > 0:
+                            elapsed_str = f"{minutes}m {seconds}s"
+                        else:
+                            elapsed_str = f"{seconds}s"
+                        message = f"{conversion_state['message']}... ({elapsed_str})"
+                        event_data = {'status': 'converting', 'percent': 100, 'message': message, 'elapsed': elapsed}
+                        yield f"data: {json.dumps(event_data)}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'status': 'waiting'})}\n\n"
     except GeneratorExit:
         # Client disconnected - signal cancellation and cleanup
         client_disconnected = True
