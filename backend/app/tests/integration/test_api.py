@@ -157,6 +157,7 @@ class TestDownloadEndpoint:
         mock_download.return_value = (
             "Test Video.mp4",
             "video/mp4",
+            12,  # file_size
             fake_generator()
         )
 
@@ -184,6 +185,7 @@ class TestDownloadEndpoint:
         mock_download.return_value = (
             "Test Audio.mp3",
             "audio/mpeg",
+            10,  # file_size
             fake_generator()
         )
 
@@ -210,7 +212,7 @@ class TestDownloadEndpoint:
         def fake_generator():
             yield b"data"
 
-        mock_download.return_value = ("video.mp4", "video/mp4", fake_generator())
+        mock_download.return_value = ("video.mp4", "video/mp4", 4, fake_generator())
 
         response = client.get(
             "/api/download",
@@ -221,24 +223,24 @@ class TestDownloadEndpoint:
         mock_download.assert_called_once_with("https://test.com", "best", False)
 
     @patch('app.routes.download.download_video')
-    def test_url_decoding(self, mock_download, client):
-        """Should decode URL-encoded URLs."""
+    def test_url_passed_correctly(self, mock_download, client):
+        """Should pass URL correctly to download function (FastAPI handles decoding)."""
         def fake_generator():
             yield b"data"
 
-        mock_download.return_value = ("video.mp4", "video/mp4", fake_generator())
+        mock_download.return_value = ("video.mp4", "video/mp4", 4, fake_generator())
 
-        # URL-encoded YouTube URL
+        # Pass URL directly - FastAPI/test client handles encoding/decoding
         response = client.get(
             "/api/download",
             params={
-                "url": "https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Dtest",
+                "url": "https://www.youtube.com/watch?v=test",
                 "format_id": "best"
             }
         )
 
         assert response.status_code == status.HTTP_200_OK
-        # Verify URL was decoded
+        # Verify URL was passed correctly
         mock_download.assert_called_once()
         called_url = mock_download.call_args[0][0]
         assert called_url == "https://www.youtube.com/watch?v=test"
@@ -252,6 +254,7 @@ class TestDownloadEndpoint:
         mock_download.return_value = (
             "Video con acentos y caracteres",
             "video/mp4",
+            4,  # file_size
             fake_generator()
         )
 
@@ -274,6 +277,7 @@ class TestDownloadEndpoint:
         mock_download.return_value = (
             "\u4e2d\u6587\u6587\u4ef6",  # Chinese characters only
             "video/mp4",
+            4,  # file_size
             fake_generator()
         )
 
@@ -319,7 +323,7 @@ class TestDownloadEndpoint:
         def fake_generator():
             yield b"data"
 
-        mock_download.return_value = ("video.mp4", "video/mp4", fake_generator())
+        mock_download.return_value = ("video.mp4", "video/mp4", 4, fake_generator())
 
         response = client.get(
             "/api/download",
@@ -327,3 +331,73 @@ class TestDownloadEndpoint:
         )
 
         assert response.headers["Cache-Control"] == "no-cache"
+
+
+class TestTimeoutBehavior:
+    """Test timeout handling for long-running operations."""
+
+    @patch('app.routes.download.run_with_timeout')
+    def test_info_timeout_returns_504(self, mock_run_with_timeout, client):
+        """Should return 504 when video info extraction times out."""
+        import asyncio
+        mock_run_with_timeout.side_effect = asyncio.TimeoutError()
+
+        response = client.post(
+            "/api/info",
+            json={"url": "https://www.youtube.com/watch?v=verylongvideo"}
+        )
+
+        assert response.status_code == status.HTTP_504_GATEWAY_TIMEOUT
+        data = response.json()
+        assert "detail" in data
+        assert "timeout" in data["detail"].lower()
+
+    @patch('app.routes.download.run_with_timeout')
+    def test_download_timeout_returns_504(self, mock_run_with_timeout, client):
+        """Should return 504 when download times out."""
+        import asyncio
+        mock_run_with_timeout.side_effect = asyncio.TimeoutError()
+
+        response = client.get(
+            "/api/download",
+            params={"url": "https://www.youtube.com/watch?v=verylargefile"}
+        )
+
+        assert response.status_code == status.HTTP_504_GATEWAY_TIMEOUT
+        data = response.json()
+        assert "detail" in data
+        assert "timeout" in data["detail"].lower()
+
+    @patch('app.routes.download.run_with_timeout')
+    def test_info_timeout_error_message(self, mock_run_with_timeout, client):
+        """Should return helpful error message on info timeout."""
+        import asyncio
+        mock_run_with_timeout.side_effect = asyncio.TimeoutError()
+
+        response = client.post(
+            "/api/info",
+            json={"url": "https://test.com/video"}
+        )
+
+        assert response.status_code == status.HTTP_504_GATEWAY_TIMEOUT
+        data = response.json()
+        # Verify the message is helpful
+        assert "video" in data["detail"].lower() or "server" in data["detail"].lower()
+        assert "try again" in data["detail"].lower()
+
+    @patch('app.routes.download.run_with_timeout')
+    def test_download_timeout_error_message(self, mock_run_with_timeout, client):
+        """Should return helpful error message on download timeout."""
+        import asyncio
+        mock_run_with_timeout.side_effect = asyncio.TimeoutError()
+
+        response = client.get(
+            "/api/download",
+            params={"url": "https://test.com/video"}
+        )
+
+        assert response.status_code == status.HTTP_504_GATEWAY_TIMEOUT
+        data = response.json()
+        # Verify the message is helpful
+        assert "video" in data["detail"].lower() or "server" in data["detail"].lower() or "download" in data["detail"].lower()
+        assert "try again" in data["detail"].lower()

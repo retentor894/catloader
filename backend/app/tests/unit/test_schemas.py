@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 from app.models.schemas import URLRequest, VideoInfo, VideoFormat, ErrorResponse
+from app.validation import validate_format_id, validate_download_id
 
 
 class TestURLRequest:
@@ -55,6 +56,16 @@ class TestURLRequest:
         """Should accept IP address URLs."""
         request = URLRequest(url="http://192.168.1.1:3000/video")
         assert request.url == "http://192.168.1.1:3000/video"
+
+    def test_ipv6_address_url_accepted(self):
+        """Should accept IPv6 address URLs in brackets."""
+        request = URLRequest(url="http://[::1]:8000/video")
+        assert request.url == "http://[::1]:8000/video"
+
+    def test_ipv6_full_address_url_accepted(self):
+        """Should accept full IPv6 address URLs."""
+        request = URLRequest(url="https://[2001:db8::1]/path")
+        assert request.url == "https://[2001:db8::1]/path"
 
     def test_url_trimmed(self):
         """Should trim whitespace from URL."""
@@ -146,16 +157,128 @@ class TestVideoInfo:
 
 
 class TestErrorResponse:
-    """Test ErrorResponse schema."""
+    """Test ErrorResponse schema matching FastAPI HTTPException format."""
 
-    def test_error_with_detail(self):
-        """Should create error with detail."""
-        error = ErrorResponse(error="Not found", detail="Video not available")
-        assert error.error == "Not found"
+    def test_error_response_creation(self):
+        """Should create error response with detail."""
+        error = ErrorResponse(detail="Video not available")
         assert error.detail == "Video not available"
 
-    def test_error_without_detail(self):
-        """Should create error without detail."""
-        error = ErrorResponse(error="Server error")
-        assert error.error == "Server error"
-        assert error.detail is None
+    def test_error_response_matches_http_exception(self):
+        """Should match FastAPI's HTTPException format."""
+        # HTTPException returns {"detail": "..."} so ErrorResponse should match
+        error = ErrorResponse(detail="Server timeout")
+        assert error.model_dump() == {"detail": "Server timeout"}
+
+
+class TestFormatIdValidation:
+    """Test format_id validation for yt-dlp format strings."""
+
+    def test_valid_simple_format(self):
+        """Should accept simple format IDs."""
+        assert validate_format_id("best") == "best"
+        assert validate_format_id("137") == "137"
+        assert validate_format_id("bestvideo") == "bestvideo"
+        assert validate_format_id("bestaudio") == "bestaudio"
+
+    def test_valid_combined_format(self):
+        """Should accept combined format strings with + and /."""
+        assert validate_format_id("bestvideo+bestaudio") == "bestvideo+bestaudio"
+        assert validate_format_id("137+140") == "137+140"
+        assert validate_format_id("bestaudio/best") == "bestaudio/best"
+
+    def test_valid_format_with_filters(self):
+        """Should accept format strings with filter expressions."""
+        assert validate_format_id("bestvideo[height<=1080]") == "bestvideo[height<=1080]"
+        assert validate_format_id("bestaudio[ext=m4a]") == "bestaudio[ext=m4a]"
+        assert validate_format_id("best[height<=720]/best") == "best[height<=720]/best"
+
+    def test_valid_complex_format(self):
+        """Should accept complex format strings."""
+        fmt = "bestvideo[height<=1080]+bestaudio/best[height<=1080]"
+        assert validate_format_id(fmt) == fmt
+
+    def test_empty_format_returns_best(self):
+        """Should return 'best' for empty format ID."""
+        assert validate_format_id("") == "best"
+        assert validate_format_id(None) == "best"
+
+    def test_whitespace_trimmed(self):
+        """Should trim whitespace from format ID."""
+        assert validate_format_id("  best  ") == "best"
+
+    def test_invalid_chars_rejected(self):
+        """Should reject format IDs with invalid characters."""
+        with pytest.raises(ValueError, match="Invalid format ID"):
+            validate_format_id("best;rm -rf /")
+        with pytest.raises(ValueError, match="Invalid format ID"):
+            validate_format_id("best$(whoami)")
+        with pytest.raises(ValueError, match="Invalid format ID"):
+            validate_format_id("best`id`")
+        with pytest.raises(ValueError, match="Invalid format ID"):
+            validate_format_id("best|cat /etc/passwd")
+
+    def test_too_long_format_rejected(self):
+        """Should reject format IDs exceeding max length."""
+        long_format = "a" * 201
+        with pytest.raises(ValueError, match="too long"):
+            validate_format_id(long_format)
+
+
+class TestDownloadIdValidation:
+    """Test download_id validation for secure token format."""
+
+    def test_valid_download_id(self):
+        """Should accept valid download IDs (URL-safe base64, ~43 chars)."""
+        # secrets.token_urlsafe(32) generates ~43 character strings
+        valid_id = "abcdefghijklmnopqrstuvwxyz1234567890_-ABCD"
+        assert validate_download_id(valid_id) == valid_id
+
+    def test_valid_download_id_with_underscores_dashes(self):
+        """Should accept IDs with URL-safe characters (-, _)."""
+        valid_id = "abc-def_ghi-jkl_mno-pqr_stu-vwx_yz12-345"  # 41 chars
+        assert validate_download_id(valid_id) == valid_id
+
+    def test_empty_download_id_rejected(self):
+        """Should reject empty download ID."""
+        with pytest.raises(ValueError, match="cannot be empty"):
+            validate_download_id("")
+        with pytest.raises(ValueError, match="cannot be empty"):
+            validate_download_id(None)
+
+    def test_too_short_download_id_rejected(self):
+        """Should reject download IDs that are too short."""
+        short_id = "a" * 39  # Less than minimum (40)
+        with pytest.raises(ValueError, match="Invalid download ID length"):
+            validate_download_id(short_id)
+
+    def test_too_long_download_id_rejected(self):
+        """Should reject download IDs that are too long."""
+        long_id = "a" * 51  # More than maximum (50)
+        with pytest.raises(ValueError, match="Invalid download ID length"):
+            validate_download_id(long_id)
+
+    def test_invalid_chars_rejected(self):
+        """Should reject download IDs with invalid characters."""
+        # 43 chars but with invalid characters
+        with pytest.raises(ValueError, match="Invalid download ID format"):
+            validate_download_id("abcdefghijklmnopqrstuvwxyz1234567890!@#$%")
+        with pytest.raises(ValueError, match="Invalid download ID format"):
+            validate_download_id("abcdefghijklmnopqrstuvwxyz1234567890/../..")
+        with pytest.raises(ValueError, match="Invalid download ID format"):
+            validate_download_id("abcdefghijklmnopqrstuvwxyz123456789 space")
+
+    def test_path_traversal_rejected(self):
+        """Should reject path traversal attempts."""
+        with pytest.raises(ValueError, match="Invalid download ID format"):
+            validate_download_id("../../etc/passwd" + "a" * 28)
+
+    def test_minimum_valid_length(self):
+        """Should accept download IDs at minimum length."""
+        min_id = "a" * 40  # Exactly minimum
+        assert validate_download_id(min_id) == min_id
+
+    def test_maximum_valid_length(self):
+        """Should accept download IDs at maximum length."""
+        max_id = "a" * 50  # Exactly maximum
+        assert validate_download_id(max_id) == max_id

@@ -1,6 +1,6 @@
 ---
 name: senior-qa-engineer
-description: Use this agent when you need to create comprehensive testing strategies, generate meaningful test cases, review existing tests for quality, or when you need to ensure code behaves correctly according to specifications rather than adjusting tests to match buggy behavior. Examples:\n\n<example>\nContext: The user has just finished implementing a new feature and needs tests.\nuser: "I just finished implementing the user authentication module with login, logout, and password reset functionality"\nassistant: "Let me use the senior-qa-engineer agent to create a comprehensive testing strategy for your authentication module"\n<commentary>\nSince the user has completed a feature implementation, use the senior-qa-engineer agent to generate thorough tests that validate the real functionality and explore edge cases.\n</commentary>\n</example>\n\n<example>\nContext: A test is failing and the user wants to fix it.\nuser: "This test is failing, can you fix it?"\nassistant: "I'll use the senior-qa-engineer agent to analyze this failing test and determine if the test is correct or if the implementation needs fixing"\n<commentary>\nWhen a test fails, use the senior-qa-engineer agent to properly diagnose whether the test expectation is correct and the code is buggy, rather than blindly adjusting the test to pass.\n</commentary>\n</example>\n\n<example>\nContext: The user is starting a new Python project and wants to establish testing practices.\nuser: "I'm starting a new e-commerce API project, what should my testing strategy look like?"\nassistant: "Let me bring in the senior-qa-engineer agent to design a complete testing strategy for your e-commerce API"\n<commentary>\nFor new projects requiring testing architecture decisions, use the senior-qa-engineer agent to establish comprehensive testing patterns from the start.\n</commentary>\n</example>\n\n<example>\nContext: The user wants to improve test coverage.\nuser: "My payment processing function only has basic tests, I feel like I'm missing something"\nassistant: "I'll use the senior-qa-engineer agent to analyze your payment processing function and identify missing test cases, especially edge cases and security scenarios"\n<commentary>\nWhen existing tests seem insufficient, use the senior-qa-engineer agent to creatively explore edge cases and scenarios that typical testing might miss.\n</commentary>\n</example>
+description: Comprehensive testing strategies and test case generation. Ensures code correctness rather than adjusting tests to match buggy behavior.
 model: opus
 color: green
 ---
@@ -55,7 +55,7 @@ When creating a testing strategy for a Python project, you will provide:
 ### 2. Test Categories with Purpose
 ```
 ├── Unit Tests (70%): Isolated logic verification
-├── Integration Tests (20%): Component interaction validation  
+├── Integration Tests (20%): Component interaction validation
 ├── E2E Tests (10%): Critical user journey validation
 └── Property-Based Tests: For complex algorithmic logic
 ```
@@ -88,7 +88,7 @@ def test_example():
 # Bad
 assert result == expected
 
-# Good  
+# Good
 assert result == expected, f"Expected {expected} for input {input}, but got {result}"
 ```
 

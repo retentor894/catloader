@@ -1,6 +1,7 @@
 from pydantic import BaseModel, field_validator
 from typing import Optional, List
-import re
+
+from ..validation import validate_url as config_validate_url
 
 
 class URLRequest(BaseModel):
@@ -10,26 +11,7 @@ class URLRequest(BaseModel):
     @classmethod
     def validate_url(cls, v: str) -> str:
         """Validate that the URL is properly formatted."""
-        if not v or not v.strip():
-            raise ValueError("URL cannot be empty")
-
-        v = v.strip()
-
-        # Basic URL pattern - must start with http:// or https://
-        url_pattern = re.compile(
-            r'^https?://'  # http:// or https://
-            r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,}|'  # domain
-            r'localhost|'  # or localhost
-            r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # or IPv4
-            r'(?::\d+)?'  # optional port
-            r'(?:/?|[/?]\S+)$',  # path
-            re.IGNORECASE
-        )
-
-        if not url_pattern.match(v):
-            raise ValueError("Invalid URL format. URL must start with http:// or https://")
-
-        return v
+        return config_validate_url(v)
 
 
 class VideoFormat(BaseModel):
@@ -52,12 +34,54 @@ class VideoInfo(BaseModel):
     audio_formats: List[VideoFormat] = []
 
 
-class DownloadRequest(BaseModel):
-    url: str
-    format_id: str
-    audio_only: bool = False
-
-
 class ErrorResponse(BaseModel):
-    error: str
-    detail: Optional[str] = None
+    """Error response schema matching FastAPI's HTTPException format."""
+    detail: str
+
+
+# =============================================================================
+# Health Check Response Models
+# =============================================================================
+
+class ThreadPoolStatus(BaseModel):
+    """Thread pool executor status."""
+    max_workers: Optional[int] = None
+    active_threads: Optional[int] = None
+    status: Optional[str] = None  # "monitoring unavailable" fallback
+
+
+class DiskStatus(BaseModel):
+    """Disk space status for temp directory."""
+    temp_dir: Optional[str] = None
+    total_gb: Optional[float] = None
+    free_gb: Optional[float] = None
+    used_percent: Optional[float] = None
+    error: Optional[str] = None  # Set when disk check fails
+
+
+class MetricsStatus(BaseModel):
+    """Application metrics counters."""
+    timeouts: int = 0
+    retries: int = 0
+    successes: int = 0
+    errors: int = 0
+
+
+class YtdlpStatus(BaseModel):
+    """yt-dlp availability status."""
+    version: Optional[str] = None
+    status: str  # "available" or "unavailable"
+
+
+class HealthResponse(BaseModel):
+    """Simple health check response."""
+    status: str
+
+
+class HealthDetailedResponse(BaseModel):
+    """Detailed health check response with system metrics."""
+    status: str
+    thread_pool: ThreadPoolStatus
+    disk: DiskStatus
+    metrics: MetricsStatus
+    yt_dlp: YtdlpStatus

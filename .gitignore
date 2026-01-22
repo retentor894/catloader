@@ -57,3 +57,4 @@ htmlcov/
 # Build
 dist/
 build/
+.claude/settings.local.json

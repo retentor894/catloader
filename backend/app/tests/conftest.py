@@ -87,12 +87,12 @@ def temp_download_dir():
         for file in os.listdir(temp_dir):
             try:
                 os.remove(os.path.join(temp_dir, file))
-            except:
-                pass
+            except OSError:
+                pass  # File may already be deleted
         try:
             os.rmdir(temp_dir)
-        except:
-            pass
+        except OSError:
+            pass  # Directory may already be deleted or not empty
 
 
 @pytest.fixture
