@@ -53,7 +53,7 @@ class SemaphoreGuardedIterator:
     from a different thread than __next__() (possible with Starlette's streaming).
     """
 
-    def __init__(self, generator, semaphore: asyncio.Semaphore):
+    def __init__(self, generator, semaphore: threading.Semaphore):
         self._generator = generator
         self._semaphore = semaphore
         self._released = False
@@ -246,14 +246,18 @@ _executor = ThreadPoolExecutor(max_workers=THREAD_POOL_MAX_WORKERS)
 # This prevents thread pool exhaustion when many timeouts occur
 # (orphaned threads from timeouts continue running until yt-dlp's socket_timeout)
 #
-# NOTE: We use lazy initialization to avoid event loop binding issues in Python < 3.10.
-# In Python < 3.10, creating asyncio.Semaphore at module level could bind it to a
-# different event loop than the one FastAPI uses.
-_operations_semaphore: Optional[asyncio.Semaphore] = None
-_semaphore_lock = threading.Lock()
+# NOTE: We use threading.Semaphore (not asyncio.Semaphore) because the semaphore
+# may be released from a synchronous context (SemaphoreGuardedIterator) running
+# in a different thread than the event loop. threading.Semaphore is thread-safe
+# and can be safely acquired/released from any thread.
+_operations_semaphore: Optional[threading.Semaphore] = None
+_semaphore_init_lock = threading.Lock()
+
+# Timeout for acquiring the semaphore (fail-fast when at capacity)
+_SEMAPHORE_ACQUIRE_TIMEOUT = 0.1
 
 
-def _get_semaphore() -> asyncio.Semaphore:
+def _get_semaphore() -> threading.Semaphore:
     """
     Get or create the operations semaphore (thread-safe lazy initialization).
 
@@ -262,10 +266,10 @@ def _get_semaphore() -> asyncio.Semaphore:
     """
     global _operations_semaphore
     if _operations_semaphore is None:
-        with _semaphore_lock:
+        with _semaphore_init_lock:
             # Double-check after acquiring lock (another thread may have created it)
             if _operations_semaphore is None:
-                _operations_semaphore = asyncio.Semaphore(MAX_CONCURRENT_OPERATIONS)
+                _operations_semaphore = threading.Semaphore(MAX_CONCURRENT_OPERATIONS)
     return _operations_semaphore
 
 
@@ -358,9 +362,8 @@ async def run_with_timeout(
     # Try to acquire semaphore with minimal wait
     # If server is at capacity, fail fast instead of queueing
     semaphore = _get_semaphore()
-    try:
-        await asyncio.wait_for(semaphore.acquire(), timeout=0.1)
-    except asyncio.TimeoutError:
+    acquired = semaphore.acquire(blocking=True, timeout=_SEMAPHORE_ACQUIRE_TIMEOUT)
+    if not acquired:
         raise ServerAtCapacityError(
             f"Server at capacity ({MAX_CONCURRENT_OPERATIONS} concurrent operations). "
             "Please try again later."
@@ -445,7 +448,7 @@ async def get_info(request: URLRequest):
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="info_extraction", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.exception(f"[{request_id}] Unexpected error after {elapsed:.2f}s: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/download", responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 504: {"model": ErrorResponse}})
@@ -537,7 +540,7 @@ async def download(
         elapsed = time.monotonic() - start_time
         metrics.record_error(operation="download", error=_truncate_error(str(e)), elapsed=elapsed)
         logger.exception(f"[{request_id}] Unexpected error after {elapsed:.2f}s: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         # If file_stream was not transferred to StreamingResponse, consume it to trigger cleanup
         if file_stream is not None:
@@ -568,9 +571,8 @@ async def download_progress(
     # Acquire semaphore before starting the stream to prevent DoS
     # This limits how many simultaneous SSE connections can be active
     semaphore = _get_semaphore()
-    try:
-        await asyncio.wait_for(semaphore.acquire(), timeout=0.1)
-    except asyncio.TimeoutError:
+    acquired = semaphore.acquire(blocking=True, timeout=_SEMAPHORE_ACQUIRE_TIMEOUT)
+    if not acquired:
         raise HTTPException(
             status_code=503,
             detail=f"Server at capacity ({MAX_CONCURRENT_OPERATIONS} concurrent operations). "
@@ -678,14 +680,17 @@ async def download_file(download_id: str):
     file_size = file_info.get('file_size', 0)
     logger.info(f"[{request_id}] Streaming file in {elapsed:.2f}s: {ascii_filename} ({file_size} bytes)")
 
+    # Use validated real_file_path to prevent TOCTOU attacks via symlinks
+    validated_path = real_file_path
+
     def file_generator():
         try:
-            with open(file_path, 'rb') as f:
+            with open(validated_path, 'rb') as f:
                 while chunk := f.read(CHUNK_SIZE):
                     yield chunk
         except FileNotFoundError:
             # Handle TOCTOU race - file was deleted between check and open
-            logger.warning(f"[{request_id}] File disappeared during streaming: {file_path}")
+            logger.warning(f"[{request_id}] File disappeared during streaming: {validated_path}")
         except Exception as e:
             logger.error(f"[{request_id}] Error streaming file: {e}")
         finally:
