@@ -106,12 +106,13 @@ class TestDownloadVideo:
         mock_ydl.extract_info.return_value = {'title': 'Test Video'}
         mock_ydl_class.return_value.__enter__.return_value = mock_ydl
 
-        filename, content_type, stream = download_video(
+        filename, content_type, file_size, stream = download_video(
             "https://test.com", "137", audio_only=False
         )
 
         assert filename == "Test Video.mp4"
         assert content_type == "video/mp4"
+        assert file_size > 0
         # Consume stream
         chunks = list(stream)
         assert len(chunks) > 0
@@ -180,7 +181,7 @@ class TestDownloadVideo:
                 mock_ydl.extract_info.return_value = {'title': 'Test'}
                 mock_ydl_class.return_value.__enter__.return_value = mock_ydl
 
-                _, content_type, stream = download_video("https://test.com", "best")
+                _, content_type, _, stream = download_video("https://test.com", "best")
                 list(stream)
 
                 assert content_type == "video/mp4"
@@ -200,7 +201,7 @@ class TestDownloadVideo:
                 mock_ydl.extract_info.return_value = {'title': 'Test'}
                 mock_ydl_class.return_value.__enter__.return_value = mock_ydl
 
-                _, content_type, stream = download_video("https://test.com", "best")
+                _, content_type, _, stream = download_video("https://test.com", "best")
                 list(stream)
 
                 assert content_type == "audio/mpeg"
@@ -220,7 +221,7 @@ class TestDownloadVideo:
                 mock_ydl.extract_info.return_value = {'title': 'Test'}
                 mock_ydl_class.return_value.__enter__.return_value = mock_ydl
 
-                _, content_type, stream = download_video("https://test.com", "best")
+                _, content_type, _, stream = download_video("https://test.com", "best")
                 list(stream)
 
                 assert content_type == "application/octet-stream"
@@ -237,7 +238,7 @@ class TestDownloadVideo:
         mock_ydl.extract_info.return_value = {'title': 'Test'}
         mock_ydl_class.return_value.__enter__.return_value = mock_ydl
 
-        _, _, stream = download_video("https://test.com", "best")
+        _, _, _, stream = download_video("https://test.com", "best")
 
         # File should exist before consuming stream
         assert os.path.exists(filepath)

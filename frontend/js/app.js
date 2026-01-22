@@ -3,6 +3,31 @@
 // - All other cases (Docker, Cloudflare Tunnel, reverse proxy): use relative URL
 const API_URL = window.location.port === '5500' ? 'http://localhost:8000' : '';
 
+// Timeout for video info extraction (ms)
+// IMPORTANT: Must be synchronized with backend timeout configuration.
+// Backend timeout: 90s (INFO_EXTRACTION_TIMEOUT in backend/app/config.py)
+// Frontend timeout: 95s (backend + 5s buffer for network latency)
+// This ensures we receive the backend's meaningful error message rather than
+// a generic browser timeout error.
+// If you change this, also update backend/app/config.py:INFO_EXTRACTION_TIMEOUT
+const INFO_FETCH_TIMEOUT = 95000;
+
+// Unified error messages - keep in sync with backend and nginx
+const ERROR_MESSAGES = {
+    502: 'Backend service unavailable. Please try again later.',
+    503: 'Server is temporarily overloaded. Please try again later.',
+    504: 'Server timeout. The video may be too long or the server is busy. Please try again.',
+    timeout: 'Request timed out. The video may be too long or the server is busy. Please try again.',
+    default: 'An error occurred. Please try again later.',
+};
+
+// UI timing constants (ms)
+const UI_TIMINGS = {
+    IFRAME_CLEANUP_DELAY: 60000,      // Time to wait before removing download iframe (1 min)
+    SUCCESS_RESET_DELAY: 2000,        // Delay before resetting button after successful download
+    ERROR_RESET_DELAY: 3000,          // Delay before resetting button after error
+};
+
 const elements = {
     urlInput: document.getElementById('url-input'),
     searchBtn: document.getElementById('search-btn'),
@@ -159,7 +184,7 @@ function downloadFile(formatId, audioOnly, container) {
                 iframe.style.display = 'none';
                 iframe.src = downloadUrl;
                 document.body.appendChild(iframe);
-                setTimeout(() => document.body.removeChild(iframe), 60000);
+                setTimeout(() => document.body.removeChild(iframe), UI_TIMINGS.IFRAME_CLEANUP_DELAY);
 
                 // Reset UI after delay
                 setTimeout(() => {
@@ -168,7 +193,7 @@ function downloadFile(formatId, audioOnly, container) {
                     progressBar.classList.add('hidden');
                     progressText.classList.add('hidden');
                     progressFill.style.width = '0%';
-                }, 2000);
+                }, UI_TIMINGS.SUCCESS_RESET_DELAY);
                 break;
 
             case 'error':
@@ -181,7 +206,7 @@ function downloadFile(formatId, audioOnly, container) {
                     btn.classList.remove('downloading');
                     btn.textContent = btn.dataset.originalLabel;
                     progressText.classList.add('hidden');
-                }, 3000);
+                }, UI_TIMINGS.ERROR_RESET_DELAY);
                 break;
 
             case 'waiting':
@@ -200,7 +225,7 @@ function downloadFile(formatId, audioOnly, container) {
             btn.classList.remove('downloading');
             btn.textContent = btn.dataset.originalLabel;
             progressText.classList.add('hidden');
-        }, 3000);
+        }, UI_TIMINGS.ERROR_RESET_DELAY);
     };
 }
 
@@ -247,6 +272,10 @@ async function fetchVideoInfo() {
     setLoading(true);
     elements.videoResult.classList.add('hidden');
 
+    // Create abort controller for timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), INFO_FETCH_TIMEOUT);
+
     try {
         const response = await fetch(`${API_URL}/api/info`, {
             method: 'POST',
@@ -254,19 +283,34 @@ async function fetchVideoInfo() {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ url }),
+            signal: controller.signal,
         });
 
-        const data = await response.json();
-
+        // Handle error responses - check Content-Type to detect HTML error pages
         if (!response.ok) {
-            throw new Error(data.detail || 'Failed to fetch video info');
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                // Server returned non-JSON (likely HTML error page from nginx)
+                // Use unified error messages for known status codes
+                const errorMessage = ERROR_MESSAGES[response.status] || ERROR_MESSAGES.default;
+                throw new Error(errorMessage);
+            }
+            const errorData = await response.json();
+            throw new Error(errorData.detail || 'Failed to fetch video info');
         }
+
+        const data = await response.json();
 
         currentVideoUrl = url;
         displayVideoInfo(data);
     } catch (error) {
-        showError(error.message || 'Failed to fetch video information. Please check the URL and try again.');
+        if (error.name === 'AbortError') {
+            showError(ERROR_MESSAGES.timeout);
+        } else {
+            showError(error.message || 'Failed to fetch video information. Please check the URL and try again.');
+        }
     } finally {
+        clearTimeout(timeoutId);
         setLoading(false);
     }
 }
