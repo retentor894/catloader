@@ -687,6 +687,13 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
         'message': 'Processing...',
     }
 
+    # Track which stream is being downloaded (for video+audio downloads)
+    # stream_count: 0 = first stream (video), 1 = second stream (audio)
+    download_state: Dict[str, Any] = {
+        'stream_count': 0,
+        'is_audio_only': audio_only,
+    }
+
     def progress_hook(d: ProgressHookData) -> None:
         """Hook called by yt-dlp with download progress."""
         # Check if cancelled
@@ -704,6 +711,14 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
             else:
                 percent = 0
 
+            # Determine phase label for video+audio downloads
+            if download_state['is_audio_only']:
+                phase = 'audio'
+            elif download_state['stream_count'] == 0:
+                phase = 'video'
+            else:
+                phase = 'audio'
+
             progress_queue.put({
                 'status': 'downloading',
                 'percent': round(percent, 1),
@@ -711,12 +726,15 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
                 'total': total,
                 'speed': speed,
                 'eta': eta,
+                'phase': phase,
             })
         elif d['status'] == 'finished':
+            # Increment stream counter for next download
+            download_state['stream_count'] += 1
             progress_queue.put({
                 'status': 'processing',
                 'percent': 100,
-                'message': 'Processing file...',
+                'message': 'Processing...',
             })
 
     def postprocessor_hook(d: PostprocessorHookData) -> None:

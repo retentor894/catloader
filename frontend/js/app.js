@@ -155,7 +155,11 @@ function downloadFile(formatId, audioOnly, container) {
             case 'downloading':
                 const percent = data.percent || 0;
                 progressFill.style.width = `${percent}%`;
-                btn.textContent = `${percent.toFixed(1)}%`;
+
+                // Show phase (video/audio) for combined downloads
+                const phaseLabel = data.phase === 'video' ? 'Video' :
+                                   data.phase === 'audio' ? 'Audio' : '';
+                btn.textContent = phaseLabel ? `${phaseLabel}: ${percent.toFixed(1)}%` : `${percent.toFixed(1)}%`;
 
                 let statusText = '';
                 if (data.speed) {
