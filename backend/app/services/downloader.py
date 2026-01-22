@@ -299,6 +299,24 @@ def remove_completed_download(download_id: str) -> Optional[Dict[str, Any]]:
         return _completed_downloads.pop(download_id, None)
 
 
+# =============================================================================
+# yt-dlp Configuration
+# =============================================================================
+#
+# CONNECTION POOLING LIMITATION:
+# ------------------------------
+# Each yt_dlp.YoutubeDL instance creates new HTTP connections. For high-traffic
+# deployments, this could potentially:
+# - Exhaust ephemeral ports under heavy load
+# - Hit connection limits on some video hosting services
+#
+# yt-dlp does not expose connection pooling configuration. Mitigations:
+# 1. The MAX_CONCURRENT_OPERATIONS semaphore limits parallel yt-dlp instances
+# 2. For very high traffic, consider:
+#    - Running multiple backend instances behind a load balancer
+#    - Implementing request queuing with rate limiting
+#    - Using a connection-pooling HTTP proxy (squid, nginx)
+#
 # Common options to avoid 403 errors
 COMMON_OPTS = {
     'quiet': True,

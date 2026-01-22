@@ -13,8 +13,32 @@ from typing import TypeVar, Callable, Tuple, Optional
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
+from ..config import (
+    INFO_EXTRACTION_TIMEOUT,
+    DOWNLOAD_INIT_TIMEOUT,
+    SSE_STREAM_TIMEOUT,
+    THREAD_POOL_MAX_WORKERS,
+    MAX_CONCURRENT_OPERATIONS,
+    CHUNK_SIZE,
+)
+from ..exceptions import VideoExtractionError, DownloadError, NetworkError, CatLoaderError, FileSizeLimitError
 from ..models.schemas import URLRequest, VideoInfo, ErrorResponse
+from ..services.downloader import (
+    get_video_info,
+    download_video,
+    download_video_with_progress,
+    remove_completed_download,
+    cleanup_temp_dir,
+)
+from ..utils import metrics
+from ..validation import validate_url as config_validate_url, validate_format_id, validate_download_id
 
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Helper Classes
+# =============================================================================
 
 class SemaphoreGuardedIterator:
     """
@@ -59,26 +83,9 @@ class SemaphoreGuardedIterator:
                 self._semaphore.release()
 
 
-from ..services.downloader import (
-    get_video_info,
-    download_video,
-    download_video_with_progress,
-    remove_completed_download,
-    cleanup_temp_dir,
-)
-from ..exceptions import VideoExtractionError, DownloadError, NetworkError, CatLoaderError, FileSizeLimitError
-from ..config import (
-    INFO_EXTRACTION_TIMEOUT,
-    DOWNLOAD_INIT_TIMEOUT,
-    SSE_STREAM_TIMEOUT,
-    THREAD_POOL_MAX_WORKERS,
-    MAX_CONCURRENT_OPERATIONS,
-    CHUNK_SIZE,
-)
-from ..validation import validate_url as config_validate_url, validate_format_id, validate_download_id
-from ..utils import metrics
-
-logger = logging.getLogger(__name__)
+# =============================================================================
+# Helper Functions
+# =============================================================================
 
 T = TypeVar('T')
 
@@ -159,6 +166,14 @@ def validate_download_id_for_http(download_id: str) -> str:
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# Reserved filenames on Windows (case-insensitive)
+_WINDOWS_RESERVED_NAMES = frozenset([
+    'CON', 'PRN', 'AUX', 'NUL',
+    'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+    'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
+])
+
+
 def sanitize_filename(filename: str) -> Tuple[str, str]:
     """
     Sanitize filename for Content-Disposition header (RFC 5987 compliant).
@@ -167,12 +182,18 @@ def sanitize_filename(filename: str) -> Tuple[str, str]:
     providing both an ASCII fallback and a UTF-8 encoded version. This ensures
     compatibility with both old browsers (ASCII) and modern browsers (UTF-8).
 
+    Handles edge cases:
+    - Null bytes and control characters
+    - Path separators (/, \\)
+    - Windows reserved names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+    - Leading/trailing dots and spaces
+
     Args:
         filename: The original filename, may contain Unicode characters.
 
     Returns:
         Tuple of (ascii_filename, encoded_filename):
-        - ascii_filename: ASCII-safe version with non-ASCII chars removed
+        - ascii_filename: ASCII-safe version with problematic chars removed
         - encoded_filename: URL-encoded UTF-8 version for filename* parameter
 
     Examples:
@@ -188,12 +209,31 @@ def sanitize_filename(filename: str) -> Tuple[str, str]:
     Usage in Content-Disposition header:
         Content-Disposition: attachment; filename="video.mp4"; filename*=UTF-8''video.mp4
     """
-    # Remove problematic characters
-    safe_filename = filename.replace('"', "'").replace('\n', '').replace('\r', '')
+    # Remove null bytes and control characters (ASCII 0-31)
+    safe_filename = ''.join(c for c in filename if ord(c) >= 32)
+
+    # Remove/replace problematic characters for headers and filesystems
+    safe_filename = (safe_filename
+        .replace('"', "'")      # Quotes break header parsing
+        .replace('\n', '')      # Newlines break headers
+        .replace('\r', '')      # Carriage returns break headers
+        .replace('/', '_')      # Path separator (Unix)
+        .replace('\\', '_')     # Path separator (Windows)
+        .replace('\x00', '')    # Null byte (redundant but explicit)
+    )
+
+    # Remove leading/trailing dots and spaces (problematic on Windows)
+    safe_filename = safe_filename.strip('. ')
+
+    # Handle Windows reserved names by prefixing with underscore
+    name_without_ext = safe_filename.rsplit('.', 1)[0] if '.' in safe_filename else safe_filename
+    if name_without_ext.upper() in _WINDOWS_RESERVED_NAMES:
+        safe_filename = '_' + safe_filename
+
     # Encode for ASCII fallback
     ascii_filename = safe_filename.encode('ascii', 'ignore').decode('ascii')
     # URL-encode for UTF-8 filename*
-    encoded_filename = quote(filename)
+    encoded_filename = quote(safe_filename)
     return ascii_filename, encoded_filename
 
 router = APIRouter(prefix="/api", tags=["download"])

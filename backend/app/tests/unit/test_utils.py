@@ -1,17 +1,13 @@
-"""Tests for utility functions including retry logic and metrics."""
+"""Tests for utility functions including metrics and backoff calculation."""
 
 import pytest
 import threading
-import time
-from unittest.mock import MagicMock, patch
 
 from app.utils import (
     Metrics,
     calculate_backoff_delay,
-    with_retry_async,
     RETRYABLE_EXCEPTIONS,
 )
-from app.exceptions import NetworkError, TransientError
 
 
 class TestMetrics:
@@ -121,67 +117,3 @@ class TestCalculateBackoffDelay:
         # Default RETRY_MAX_DELAY is 10.0
         delay = calculate_backoff_delay(10)  # Would be 1024 without cap
         assert delay == 10.0
-
-
-class TestWithRetryAsync:
-    """Test asynchronous retry function."""
-
-    @pytest.mark.asyncio
-    async def test_returns_value_on_success(self):
-        """Should return function value on first successful call."""
-        async def successful_func():
-            return "success"
-
-        result = await with_retry_async(
-            successful_func,
-            max_retries=3,
-            operation_name="test"
-        )
-        assert result == "success"
-
-    @pytest.mark.asyncio
-    async def test_retries_on_retryable_exception(self):
-        """Should retry on retryable exceptions and use correct backoff delays."""
-        call_count = 0
-
-        async def failing_then_success():
-            nonlocal call_count
-            call_count += 1
-            if call_count < 3:
-                raise NetworkError("Network error")
-            return "success"
-
-        with patch('app.utils.asyncio.sleep') as mock_sleep:
-            result = await with_retry_async(
-                failing_then_success,
-                max_retries=3,
-                retryable_exceptions=(NetworkError,),
-                operation_name="test"
-            )
-
-        assert result == "success"
-        assert call_count == 3
-        # Verify backoff delays: 2 retries with exponential backoff (1.0s, 2.0s)
-        assert mock_sleep.call_count == 2
-        mock_sleep.assert_any_call(1.0)  # First retry delay
-        mock_sleep.assert_any_call(2.0)  # Second retry delay
-
-    @pytest.mark.asyncio
-    async def test_raises_after_max_retries(self):
-        """Should raise last exception after exhausting retries with correct delays."""
-        async def always_fails():
-            raise NetworkError("Persistent error")
-
-        with patch('app.utils.asyncio.sleep') as mock_sleep:
-            with pytest.raises(NetworkError, match="Persistent error"):
-                await with_retry_async(
-                    always_fails,
-                    max_retries=2,
-                    retryable_exceptions=(NetworkError,),
-                    operation_name="test"
-                )
-
-        # Verify backoff delays: 2 retries with exponential backoff (1.0s, 2.0s)
-        assert mock_sleep.call_count == 2
-        mock_sleep.assert_any_call(1.0)  # First retry delay
-        mock_sleep.assert_any_call(2.0)  # Second retry delay

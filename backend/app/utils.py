@@ -1,38 +1,24 @@
 """
-Utility functions for retry logic and metrics collection.
+Utility functions for metrics collection and backoff calculation.
 
-Module Structure Note (SRP Consideration):
-------------------------------------------
-This module contains both Metrics and Retry functionality, which could be
-considered a violation of Single Responsibility Principle. They are kept
-together because:
+This module provides:
+- Metrics: Thread-safe metrics collector for observability
+- calculate_backoff_delay: Exponential backoff calculation
+- RETRYABLE_EXCEPTIONS: Tuple of exceptions that indicate transient errors
 
-1. Both are cross-cutting concerns used throughout the application
-2. Retry logic uses Metrics to record retry attempts (tight coupling)
-3. Neither is complex enough to warrant separate files (< 100 lines each)
-4. Having a single utils module simplifies imports
-
-For larger applications, consider splitting into:
-- utils/metrics.py: Metrics class and related utilities
-- utils/retry.py: Retry logic and backoff calculations
-- utils/__init__.py: Re-export for backward compatibility
-
-To split, update imports in:
-- main.py: from .utils import metrics -> from .utils.metrics import metrics
-- routes/download.py: from ..utils import metrics -> from ..utils.metrics import metrics
+Note: The application does NOT use endpoint-level retry logic because yt-dlp
+has internal retries (retries=3 in COMMON_OPTS). The backoff utilities are
+kept for potential future use and as general-purpose utilities.
 """
 
-import asyncio
 import logging
 import threading
-from typing import TypeVar, Callable, Type, Tuple, Awaitable
+from typing import Type, Tuple
 
-from .config import MAX_RETRIES, RETRY_BASE_DELAY, RETRY_MAX_DELAY, METRICS_ENABLED
+from .config import RETRY_BASE_DELAY, RETRY_MAX_DELAY, METRICS_ENABLED
 from .exceptions import TransientError
 
 logger = logging.getLogger(__name__)
-
-T = TypeVar('T')
 
 # =============================================================================
 # Metrics Collection
@@ -145,63 +131,3 @@ def calculate_backoff_delay(attempt: int) -> float:
     """
     delay = RETRY_BASE_DELAY * (2 ** attempt)
     return min(delay, RETRY_MAX_DELAY)
-
-
-async def with_retry_async(
-    func: Callable[..., Awaitable[T]],
-    *args,
-    max_retries: int = MAX_RETRIES,
-    retryable_exceptions: Tuple[Type[Exception], ...] = RETRYABLE_EXCEPTIONS,
-    operation_name: str = "operation",
-    **kwargs
-) -> T:
-    """
-    Execute an async function with retry logic.
-
-    Args:
-        func: The async function to execute (must return an Awaitable)
-        *args: Positional arguments for func
-        max_retries: Maximum number of retry attempts
-        retryable_exceptions: Tuple of exception types that should trigger retry
-        operation_name: Name for logging/metrics
-        **kwargs: Keyword arguments for func
-
-    Returns:
-        The result of func
-
-    Raises:
-        The last exception if all retries are exhausted
-    """
-    last_exception = None
-
-    for attempt in range(max_retries + 1):
-        try:
-            return await func(*args, **kwargs)
-        except retryable_exceptions as e:
-            last_exception = e
-
-            if attempt < max_retries:
-                delay = calculate_backoff_delay(attempt)
-                metrics.record_retry(
-                    operation=operation_name,
-                    attempt=attempt + 1,
-                    delay=delay,
-                    error=str(e)[:100]
-                )
-                logger.warning(
-                    f"Retry {attempt + 1}/{max_retries} for {operation_name} "
-                    f"after error: {e}. Waiting {delay:.1f}s..."
-                )
-                await asyncio.sleep(delay)
-            else:
-                logger.error(
-                    f"All {max_retries} retries exhausted for {operation_name}. "
-                    f"Last error: {e}"
-                )
-
-    # All retries exhausted, raise the last exception
-    # Type assertion: last_exception is guaranteed to be set if we reach here
-    # because the loop executes at least once (max_retries >= 0) and we only
-    # exit the loop without returning if an exception was caught
-    assert last_exception is not None, "Unreachable: loop must have caught an exception"
-    raise last_exception
