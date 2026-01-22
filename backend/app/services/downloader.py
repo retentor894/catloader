@@ -680,7 +680,12 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
     cancelled = threading.Event()
     download_error: Dict[str, Any] = {}
 
+    # Lock to protect shared mutable state accessed from both the main thread
+    # (SSE loop) and the download thread (progress/postprocessor hooks)
+    state_lock = threading.Lock()
+
     # Track conversion state for elapsed time updates
+    # Protected by state_lock
     conversion_state: Dict[str, Any] = {
         'active': False,
         'start_time': 0.0,
@@ -689,6 +694,7 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
 
     # Track which stream is being downloaded (for video+audio downloads)
     # stream_count: 0 = first stream (video), 1 = second stream (audio)
+    # Protected by state_lock
     download_state: Dict[str, Any] = {
         'stream_count': 0,
         'is_audio_only': audio_only,
@@ -712,12 +718,13 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
                 percent = 0
 
             # Determine phase label for video+audio downloads
-            if download_state['is_audio_only']:
-                phase = 'audio'
-            elif download_state['stream_count'] == 0:
-                phase = 'video'
-            else:
-                phase = 'audio'
+            with state_lock:
+                if download_state['is_audio_only']:
+                    phase = 'audio'
+                elif download_state['stream_count'] == 0:
+                    phase = 'video'
+                else:
+                    phase = 'audio'
 
             progress_queue.put({
                 'status': 'downloading',
@@ -730,7 +737,8 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
             })
         elif d['status'] == 'finished':
             # Increment stream counter for next download
-            download_state['stream_count'] += 1
+            with state_lock:
+                download_state['stream_count'] += 1
             progress_queue.put({
                 'status': 'processing',
                 'percent': 100,
@@ -755,9 +763,10 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
                 message = f'Processing ({postprocessor})'
 
             # Track conversion start for elapsed time updates
-            conversion_state['active'] = True
-            conversion_state['start_time'] = time.time()
-            conversion_state['message'] = message
+            with state_lock:
+                conversion_state['active'] = True
+                conversion_state['start_time'] = time.time()
+                conversion_state['message'] = message
 
             progress_queue.put({
                 'status': 'converting',
@@ -768,7 +777,8 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
             logger.debug(f"Postprocessor started: {postprocessor}")
 
         elif status == 'finished':
-            conversion_state['active'] = False
+            with state_lock:
+                conversion_state['active'] = False
             progress_queue.put({
                 'status': 'processing',
                 'percent': 100,
@@ -815,15 +825,21 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
             except queue.Empty:
                 # Send updates to keep connection alive
                 if not download_complete.is_set():
-                    if conversion_state['active']:
+                    # Read shared state under lock
+                    with state_lock:
+                        is_converting = conversion_state['active']
+                        conv_start_time = conversion_state['start_time']
+                        conv_message = conversion_state['message']
+
+                    if is_converting:
                         # During conversion, show elapsed time so user knows it's working
-                        elapsed = int(time.time() - conversion_state['start_time'])
+                        elapsed = int(time.time() - conv_start_time)
                         minutes, seconds = divmod(elapsed, 60)
                         if minutes > 0:
                             elapsed_str = f"{minutes}m {seconds}s"
                         else:
                             elapsed_str = f"{seconds}s"
-                        message = f"{conversion_state['message']}... ({elapsed_str})"
+                        message = f"{conv_message}... ({elapsed_str})"
                         event_data = {'status': 'converting', 'percent': 100, 'message': message, 'elapsed': elapsed}
                         yield f"data: {json.dumps(event_data)}\n\n"
                     else:
