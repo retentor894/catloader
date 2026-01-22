@@ -692,11 +692,9 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
         'message': 'Processing...',
     }
 
-    # Track which stream is being downloaded (for video+audio downloads)
-    # stream_count: 0 = first stream (video), 1 = second stream (audio)
+    # Track download mode (audio-only vs video+audio)
     # Protected by state_lock
     download_state: Dict[str, Any] = {
-        'stream_count': 0,
         'is_audio_only': audio_only,
     }
 
@@ -718,13 +716,23 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
                 percent = 0
 
             # Determine phase label for video+audio downloads
+            # Detect stream type from filename instead of assuming order
             with state_lock:
-                if download_state['is_audio_only']:
+                is_audio_only = download_state['is_audio_only']
+
+            if is_audio_only:
+                phase = 'audio'
+            else:
+                # Check filename to determine if this is video or audio stream
+                # yt-dlp temp files often have format indicators in the name
+                filename = d.get('tmpfilename') or d.get('filename') or ''
+                filename_lower = filename.lower()
+                # Audio stream indicators: common audio extensions and format patterns
+                audio_indicators = ('.m4a', '.opus', '.ogg', '.aac', '.webm.part', 'f140', 'audio')
+                if any(ind in filename_lower for ind in audio_indicators):
                     phase = 'audio'
-                elif download_state['stream_count'] == 0:
-                    phase = 'video'
                 else:
-                    phase = 'audio'
+                    phase = 'video'
 
             progress_queue.put({
                 'status': 'downloading',
@@ -736,9 +744,6 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
                 'phase': phase,
             })
         elif d['status'] == 'finished':
-            # Increment stream counter for next download
-            with state_lock:
-                download_state['stream_count'] += 1
             progress_queue.put({
                 'status': 'processing',
                 'percent': 100,
@@ -755,10 +760,14 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
 
         if status == 'started':
             # Show which postprocessor is running
-            if 'FFmpeg' in postprocessor or 'Extract' in postprocessor:
-                message = 'Converting to MP3'
-            elif 'Merge' in postprocessor:
+            # Check Merge first since FFmpegMerger contains 'FFmpeg'
+            if 'Merge' in postprocessor:
                 message = 'Merging audio and video'
+            elif 'ExtractAudio' in postprocessor:
+                # FFmpegExtractAudio - converting to audio format (MP3 in our config)
+                message = 'Converting to MP3'
+            elif 'FFmpeg' in postprocessor:
+                message = 'Processing audio'
             else:
                 message = f'Processing ({postprocessor})'
 
