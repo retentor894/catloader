@@ -39,6 +39,7 @@ temp/
 
 # Docker
 .docker/
+docker-compose.override.yml
 
 # Downloaded videos (temp)
 downloads/
