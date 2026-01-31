@@ -378,12 +378,34 @@ COMMON_OPTS = {
     'socket_timeout': YTDLP_SOCKET_TIMEOUT,
     # Internal retry count for transient network errors
     'retries': 3,
-    # JavaScript runtime for YouTube challenge solving (deno is default, node as fallback)
-    # Deno is preferred in Docker, Node.js works locally if available
-    'js_runtimes': {'deno': {}, 'node': {}},
-    # Allow downloading challenge solver scripts from yt-dlp GitHub releases
-    'remote_components': ['ejs:github'],
 }
+
+# Add JavaScript runtime options for yt-dlp >= 2025.1.1
+# These options are required for YouTube challenge solving but cause errors on older versions
+def _get_ytdlp_version() -> tuple:
+    """Get yt-dlp version as a tuple for comparison."""
+    try:
+        version_str = yt_dlp.version.__version__
+        # Version format: "2025.01.29" -> (2025, 1, 29)
+        parts = version_str.split('.')
+        return tuple(int(p) for p in parts[:3])
+    except Exception:
+        return (0, 0, 0)
+
+_YTDLP_VERSION = _get_ytdlp_version()
+_MIN_JS_RUNTIME_VERSION = (2025, 1, 1)
+
+if _YTDLP_VERSION >= _MIN_JS_RUNTIME_VERSION:
+    # JavaScript runtime for YouTube challenge solving (deno preferred, node as fallback)
+    COMMON_OPTS['js_runtimes'] = {'deno': {}, 'node': {}}
+    # Allow downloading challenge solver scripts from yt-dlp GitHub releases
+    COMMON_OPTS['remote_components'] = ['ejs:github']
+    logger.debug(f"yt-dlp {yt_dlp.version.__version__}: JavaScript runtime options enabled")
+else:
+    logger.warning(
+        f"yt-dlp {yt_dlp.version.__version__} is older than 2025.1.1. "
+        "YouTube downloads may fail with 403 errors. Please upgrade: pip install -U yt-dlp"
+    )
 
 
 def _configure_format_options(ydl_opts: Dict[str, Any], format_id: str, audio_only: bool) -> None:
@@ -738,11 +760,18 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
                 has_audio = acodec and acodec != 'none'
 
                 if has_video and not has_audio:
+                    # Video-only stream (e.g., separate video track)
                     phase = 'video'
                 elif has_audio and not has_video:
+                    # Audio-only stream (e.g., separate audio track)
                     phase = 'audio'
+                elif has_video and has_audio:
+                    # Combined stream with both video and audio
+                    phase = 'video'
                 else:
-                    # Fallback: combined stream or unknown, label as video
+                    # Unknown stream type (both codecs are 'none' or missing)
+                    # This can happen with HLS/DASH fragments or metadata-only updates
+                    # Default to 'video' as it's typically the first/larger stream
                     phase = 'video'
 
             progress_queue.put({
