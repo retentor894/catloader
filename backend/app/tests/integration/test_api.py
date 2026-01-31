@@ -70,7 +70,7 @@ class TestVideoInfoEndpoint:
     def test_missing_url_field(self, client):
         """Should return 422 for missing URL."""
         response = client.post("/api/info", json={})
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
     def test_invalid_json_body(self, client):
         """Should return 422 for invalid JSON."""
@@ -79,7 +79,7 @@ class TestVideoInfoEndpoint:
             content="invalid json",
             headers={"Content-Type": "application/json"}
         )
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
     @patch('app.routes.download.get_video_info')
     def test_video_extraction_error(self, mock_get_info, client):
@@ -204,7 +204,7 @@ class TestDownloadEndpoint:
     def test_missing_url_parameter(self, client):
         """Should return 422 for missing URL parameter."""
         response = client.get("/api/download")
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
     @patch('app.routes.download.download_video')
     def test_default_parameters(self, mock_download, client):
