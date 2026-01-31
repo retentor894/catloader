@@ -1,0 +1,42 @@
+[Unit]
+Description=CatLoader GitHub Webhook Server
+Documentation=https://github.com/YOUR_USERNAME/catloader
+After=network.target
+
+[Service]
+Type=simple
+User=raptor
+WorkingDirectory=/home/raptor/catloader-production/app/automation
+Environment="NODE_ENV=production"
+Environment="CATLOADER_WEBHOOK_PORT=9001"
+Environment="CATLOADER_WEBHOOK_SECRET=b911e2a9a71482614a15ef3c073fa356ed49f8d7ae2adb90c1e1d6c1829706e7"
+Environment="CATLOADER_WEBHOOK_LOG=/home/raptor/catloader-production/logs/webhook.log"
+Environment="CATLOADER_PROD_PATH=/home/raptor/catloader-production/app"
+Environment="CATLOADER_DEV_PATH=/home/raptor/catloader-development/app"
+Environment="HOME=/home/raptor"
+Environment="GIT_SSH_COMMAND=ssh -i /home/raptor/.ssh/catloader_deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=no"
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/home/raptor/.nvm/versions/node/v20.19.5/bin/node /home/raptor/catloader-production/app/automation/webhook-server.js
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=catloader-webhook
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/raptor/catloader-production /home/raptor/catloader-development /tmp /home/raptor/.docker
+ReadOnlyPaths=/home/raptor/.ssh /home/raptor/.gitconfig
+
+# Resource limits (increased for Docker builds)
+MemoryMax=1G
+MemoryHigh=512M
+CPUQuota=100%
+TasksMax=200
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

@@ -1,12 +1,12 @@
 services:
   backend:
     build: ./backend
-    container_name: catloader-dev-backend
+    container_name: ${CONTAINER_NAME_BACKEND:-catloader-backend}
     restart: unless-stopped
     environment:
       - PYTHONUNBUFFERED=1
     volumes:
-      - ${TEMP_DIR:-/tmp/catloader-dev}:${TEMP_DIR:-/tmp/catloader-dev}
+      - ${TEMP_DIR:-/tmp/catloader}:${TEMP_DIR:-/tmp/catloader}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -20,10 +20,10 @@ services:
 
   frontend:
     build: ./frontend
-    container_name: catloader-dev-frontend
+    container_name: ${CONTAINER_NAME_FRONTEND:-catloader-frontend}
     restart: unless-stopped
     ports:
-      - "${HTTP_PORT:-8180}:80"
+      - "${HTTP_PORT:-8080}:80"
     depends_on:
       - backend
     logging:
