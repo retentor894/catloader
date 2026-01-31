@@ -358,3 +358,4 @@ MIT License - see LICENSE file for details.
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) - Video download engine
 - [FastAPI](https://fastapi.tiangolo.com/) - Backend framework
 - [Playwright](https://playwright.dev/) - E2E testing framework
+
