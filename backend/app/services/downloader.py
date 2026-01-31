@@ -389,7 +389,8 @@ def _get_ytdlp_version() -> tuple:
         # Version format: "2025.01.29" -> (2025, 1, 29)
         parts = version_str.split('.')
         return tuple(int(p) for p in parts[:3])
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Could not parse yt-dlp version, assuming old version: {e}")
         return (0, 0, 0)
 
 _YTDLP_VERSION = _get_ytdlp_version()

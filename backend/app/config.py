@@ -164,6 +164,7 @@ TEMP_DIR_PREFIX = "catloader_"
 # User-Agent for yt-dlp HTTP requests
 # - Some sites block requests without a browser-like User-Agent
 # - Update periodically to match current browser versions
+# - Last updated: 2025-01 (Chrome 131)
 # - Env: CATLOADER_USER_AGENT
 YTDLP_USER_AGENT = os.environ.get(
     "CATLOADER_USER_AGENT",
