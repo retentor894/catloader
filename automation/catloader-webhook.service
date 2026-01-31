@@ -1,0 +1,38 @@
+[Unit]
+Description=CatLoader GitHub Webhook Server
+Documentation=https://github.com/YOUR_USERNAME/catloader
+After=network.target
+
+[Service]
+Type=simple
+User=raptor
+WorkingDirectory=/home/raptor/catloader-production/app/automation
+Environment="NODE_ENV=production"
+Environment="CATLOADER_WEBHOOK_PORT=9001"
+Environment="CATLOADER_WEBHOOK_SECRET=b911e2a9a71482614a15ef3c073fa356ed49f8d7ae2adb90c1e1d6c1829706e7"
+Environment="CATLOADER_WEBHOOK_LOG=/home/raptor/catloader-production/logs/webhook.log"
+Environment="CATLOADER_PROD_PATH=/home/raptor/catloader-production/app"
+Environment="CATLOADER_DEV_PATH=/home/raptor/catloader-development/app"
+ExecStart=/usr/bin/node /home/raptor/catloader-production/app/automation/webhook-server.js
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=catloader-webhook
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/raptor/catloader-production /home/raptor/catloader-development /tmp
+
+# Resource limits
+MemoryMax=256M
+MemoryHigh=192M
+CPUQuota=25%
+TasksMax=30
+LimitNOFILE=2048
+
+[Install]
+WantedBy=multi-user.target
