@@ -378,6 +378,11 @@ COMMON_OPTS = {
     'socket_timeout': YTDLP_SOCKET_TIMEOUT,
     # Internal retry count for transient network errors
     'retries': 3,
+    # JavaScript runtime for YouTube challenge solving (deno is default, node as fallback)
+    # Deno is preferred in Docker, Node.js works locally if available
+    'js_runtimes': {'deno': {}, 'node': {}},
+    # Allow downloading challenge solver scripts from yt-dlp GitHub releases
+    'remote_components': ['ejs:github'],
 }
 
 
@@ -716,22 +721,28 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
                 percent = 0
 
             # Determine phase label for video+audio downloads
-            # Detect stream type from filename instead of assuming order
+            # Use codec info from info_dict (most reliable method)
             with state_lock:
                 is_audio_only = download_state['is_audio_only']
 
             if is_audio_only:
                 phase = 'audio'
             else:
-                # Check filename to determine if this is video or audio stream
-                # yt-dlp temp files often have format indicators in the name
-                filename = d.get('tmpfilename') or d.get('filename') or ''
-                filename_lower = filename.lower()
-                # Audio stream indicators: common audio extensions and format patterns
-                audio_indicators = ('.m4a', '.opus', '.ogg', '.aac', '.webm.part', 'f140', 'audio')
-                if any(ind in filename_lower for ind in audio_indicators):
+                # Check codecs from info_dict to determine stream type
+                info = d.get('info_dict', {})
+                vcodec = info.get('vcodec', 'none')
+                acodec = info.get('acodec', 'none')
+
+                # Determine phase based on codec presence
+                has_video = vcodec and vcodec != 'none'
+                has_audio = acodec and acodec != 'none'
+
+                if has_video and not has_audio:
+                    phase = 'video'
+                elif has_audio and not has_video:
                     phase = 'audio'
                 else:
+                    # Fallback: combined stream or unknown, label as video
                     phase = 'video'
 
             progress_queue.put({
