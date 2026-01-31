@@ -380,6 +380,34 @@ COMMON_OPTS = {
     'retries': 3,
 }
 
+# Add JavaScript runtime options for yt-dlp >= 2025.1.1
+# These options are required for YouTube challenge solving but cause errors on older versions
+def _get_ytdlp_version() -> tuple:
+    """Get yt-dlp version as a tuple for comparison."""
+    try:
+        version_str = yt_dlp.version.__version__
+        # Version format: "2025.01.29" -> (2025, 1, 29)
+        parts = version_str.split('.')
+        return tuple(int(p) for p in parts[:3])
+    except Exception as e:
+        logger.warning(f"Could not parse yt-dlp version, assuming old version: {e}")
+        return (0, 0, 0)
+
+_YTDLP_VERSION = _get_ytdlp_version()
+_MIN_JS_RUNTIME_VERSION = (2025, 1, 1)
+
+if _YTDLP_VERSION >= _MIN_JS_RUNTIME_VERSION:
+    # JavaScript runtime for YouTube challenge solving (deno preferred, node as fallback)
+    COMMON_OPTS['js_runtimes'] = {'deno': {}, 'node': {}}
+    # Allow downloading challenge solver scripts from yt-dlp GitHub releases
+    COMMON_OPTS['remote_components'] = ['ejs:github']
+    logger.debug(f"yt-dlp {yt_dlp.version.__version__}: JavaScript runtime options enabled")
+else:
+    logger.warning(
+        f"yt-dlp {yt_dlp.version.__version__} is older than 2025.1.1. "
+        "YouTube downloads may fail with 403 errors. Please upgrade: pip install -U yt-dlp"
+    )
+
 
 def _configure_format_options(ydl_opts: Dict[str, Any], format_id: str, audio_only: bool) -> None:
     """
@@ -716,22 +744,35 @@ def download_video_with_progress(url: str, format_id: str, audio_only: bool = Fa
                 percent = 0
 
             # Determine phase label for video+audio downloads
-            # Detect stream type from filename instead of assuming order
+            # Use codec info from info_dict (most reliable method)
             with state_lock:
                 is_audio_only = download_state['is_audio_only']
 
             if is_audio_only:
                 phase = 'audio'
             else:
-                # Check filename to determine if this is video or audio stream
-                # yt-dlp temp files often have format indicators in the name
-                filename = d.get('tmpfilename') or d.get('filename') or ''
-                filename_lower = filename.lower()
-                # Audio stream indicators: common audio extensions and format patterns
-                audio_indicators = ('.m4a', '.opus', '.ogg', '.aac', '.webm.part', 'f140', 'audio')
-                if any(ind in filename_lower for ind in audio_indicators):
+                # Check codecs from info_dict to determine stream type
+                info = d.get('info_dict', {})
+                vcodec = info.get('vcodec', 'none')
+                acodec = info.get('acodec', 'none')
+
+                # Determine phase based on codec presence
+                has_video = vcodec and vcodec != 'none'
+                has_audio = acodec and acodec != 'none'
+
+                if has_video and not has_audio:
+                    # Video-only stream (e.g., separate video track)
+                    phase = 'video'
+                elif has_audio and not has_video:
+                    # Audio-only stream (e.g., separate audio track)
                     phase = 'audio'
+                elif has_video and has_audio:
+                    # Combined stream with both video and audio
+                    phase = 'video'
                 else:
+                    # Unknown stream type (both codecs are 'none' or missing)
+                    # This can happen with HLS/DASH fragments or metadata-only updates
+                    # Default to 'video' as it's typically the first/larger stream
                     phase = 'video'
 
             progress_queue.put({
