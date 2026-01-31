@@ -1,6 +1,5 @@
 import pytest
 from unittest.mock import patch, MagicMock
-from fastapi import status
 from app.models.schemas import VideoInfo, VideoFormat
 from app.exceptions import VideoExtractionError, DownloadError, NetworkError
 
@@ -11,7 +10,7 @@ class TestHealthEndpoints:
     def test_root_endpoint(self, client):
         """Should return API status on root."""
         response = client.get("/")
-        assert response.status_code == status.HTTP_200_OK
+        assert response.status_code == 200
         data = response.json()
         assert data["message"] == "CatLoader API"
         assert data["status"] == "running"
@@ -19,7 +18,7 @@ class TestHealthEndpoints:
     def test_health_endpoint(self, client):
         """Should return healthy status."""
         response = client.get("/health")
-        assert response.status_code == status.HTTP_200_OK
+        assert response.status_code == 200
         assert response.json()["status"] == "healthy"
 
 
@@ -60,7 +59,7 @@ class TestVideoInfoEndpoint:
             json={"url": "https://www.youtube.com/watch?v=test"}
         )
 
-        assert response.status_code == status.HTTP_200_OK
+        assert response.status_code == 200
         data = response.json()
         assert data["title"] == "Test Video"
         assert data["duration"] == 300
@@ -70,7 +69,7 @@ class TestVideoInfoEndpoint:
     def test_missing_url_field(self, client):
         """Should return 422 for missing URL."""
         response = client.post("/api/info", json={})
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.status_code == 422
 
     def test_invalid_json_body(self, client):
         """Should return 422 for invalid JSON."""
@@ -79,7 +78,7 @@ class TestVideoInfoEndpoint:
             content="invalid json",
             headers={"Content-Type": "application/json"}
         )
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.status_code == 422
 
     @patch('app.routes.download.get_video_info')
     def test_video_extraction_error(self, mock_get_info, client):
@@ -91,7 +90,7 @@ class TestVideoInfoEndpoint:
             json={"url": "https://unsupported-site.com/video"}
         )
 
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.status_code == 400
         assert "detail" in response.json()
 
     @patch('app.routes.download.get_video_info')
@@ -104,7 +103,7 @@ class TestVideoInfoEndpoint:
             json={"url": "https://www.youtube.com/watch?v=test"}
         )
 
-        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        assert response.status_code == 503
         assert "detail" in response.json()
 
     @patch('app.routes.download.get_video_info')
@@ -117,7 +116,7 @@ class TestVideoInfoEndpoint:
             json={"url": "https://www.youtube.com/watch?v=test"}
         )
 
-        assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+        assert response.status_code == 500
         assert "detail" in response.json()
 
     @patch('app.routes.download.get_video_info')
@@ -134,7 +133,7 @@ class TestVideoInfoEndpoint:
             json={"url": "https://test.com"}
         )
 
-        assert response.status_code == status.HTTP_200_OK
+        assert response.status_code == 200
         data = response.json()
         assert "title" in data
         assert "thumbnail" in data
@@ -170,7 +169,7 @@ class TestDownloadEndpoint:
             }
         )
 
-        assert response.status_code == status.HTTP_200_OK
+        assert response.status_code == 200
         assert response.headers["content-type"] == "video/mp4"
         assert "Content-Disposition" in response.headers
         assert "attachment" in response.headers["Content-Disposition"]
@@ -198,13 +197,13 @@ class TestDownloadEndpoint:
             }
         )
 
-        assert response.status_code == status.HTTP_200_OK
+        assert response.status_code == 200
         assert response.headers["content-type"] == "audio/mpeg"
 
     def test_missing_url_parameter(self, client):
         """Should return 422 for missing URL parameter."""
         response = client.get("/api/download")
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.status_code == 422
 
     @patch('app.routes.download.download_video')
     def test_default_parameters(self, mock_download, client):
@@ -219,7 +218,7 @@ class TestDownloadEndpoint:
             params={"url": "https://test.com"}
         )
 
-        assert response.status_code == status.HTTP_200_OK
+        assert response.status_code == 200
         mock_download.assert_called_once_with("https://test.com", "best", False)
 
     @patch('app.routes.download.download_video')
@@ -239,7 +238,7 @@ class TestDownloadEndpoint:
             }
         )
 
-        assert response.status_code == status.HTTP_200_OK
+        assert response.status_code == 200
         # Verify URL was passed correctly
         mock_download.assert_called_once()
         called_url = mock_download.call_args[0][0]
@@ -263,7 +262,7 @@ class TestDownloadEndpoint:
             params={"url": "https://test.com"}
         )
 
-        assert response.status_code == status.HTTP_200_OK
+        assert response.status_code == 200
         content_disp = response.headers["Content-Disposition"]
         # Should be valid ASCII
         content_disp.encode('ascii')
@@ -286,7 +285,7 @@ class TestDownloadEndpoint:
             params={"url": "https://test.com", "audio_only": "false"}
         )
 
-        assert response.status_code == status.HTTP_200_OK
+        assert response.status_code == 200
         content_disp = response.headers["Content-Disposition"]
         assert "download.mp4" in content_disp
 
@@ -300,7 +299,7 @@ class TestDownloadEndpoint:
             params={"url": "https://test.com"}
         )
 
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.status_code == 400
         assert "detail" in response.json()
         assert "403" in response.json()["detail"]
 
@@ -314,7 +313,7 @@ class TestDownloadEndpoint:
             params={"url": "https://test.com"}
         )
 
-        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        assert response.status_code == 503
         assert "detail" in response.json()
 
     @patch('app.routes.download.download_video')
@@ -347,7 +346,7 @@ class TestTimeoutBehavior:
             json={"url": "https://www.youtube.com/watch?v=verylongvideo"}
         )
 
-        assert response.status_code == status.HTTP_504_GATEWAY_TIMEOUT
+        assert response.status_code == 504
         data = response.json()
         assert "detail" in data
         assert "timeout" in data["detail"].lower()
@@ -363,7 +362,7 @@ class TestTimeoutBehavior:
             params={"url": "https://www.youtube.com/watch?v=verylargefile"}
         )
 
-        assert response.status_code == status.HTTP_504_GATEWAY_TIMEOUT
+        assert response.status_code == 504
         data = response.json()
         assert "detail" in data
         assert "timeout" in data["detail"].lower()
@@ -379,7 +378,7 @@ class TestTimeoutBehavior:
             json={"url": "https://test.com/video"}
         )
 
-        assert response.status_code == status.HTTP_504_GATEWAY_TIMEOUT
+        assert response.status_code == 504
         data = response.json()
         # Verify the message is helpful
         assert "video" in data["detail"].lower() or "server" in data["detail"].lower()
@@ -396,7 +395,7 @@ class TestTimeoutBehavior:
             params={"url": "https://test.com/video"}
         )
 
-        assert response.status_code == status.HTTP_504_GATEWAY_TIMEOUT
+        assert response.status_code == 504
         data = response.json()
         # Verify the message is helpful
         assert "video" in data["detail"].lower() or "server" in data["detail"].lower() or "download" in data["detail"].lower()
