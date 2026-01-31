@@ -184,8 +184,9 @@ if [[ $RETRY_COUNT -eq $MAX_RETRIES ]]; then
     print_warning "Verifica manualmente: curl http://localhost:${HTTP_PORT}/"
 fi
 
-# Log deployment history
-DEPLOY_LOG="$HOME/catloader-${ENV}/logs/deploy-history.log"
+# Log deployment history (use parent of current directory)
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEPLOY_LOG="${REPO_ROOT}/../logs/deploy-history.log"
 mkdir -p "$(dirname "$DEPLOY_LOG")"
 CURRENT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
